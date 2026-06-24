@@ -73,6 +73,14 @@ namespace Game.Player
             _spawnRot = transform.rotation;
         }
 
+        /// <summary>Server: update the respawn pose (called by a checkpoint trigger).</summary>
+        [Server]
+        public void SetCheckpoint(Vector3 position, Quaternion rotation)
+        {
+            _spawnPos = position;
+            _spawnRot = rotation;
+        }
+
         public override void OnStartClient()
         {
             // Apply whatever name is already synced (covers late joiners / initial value).

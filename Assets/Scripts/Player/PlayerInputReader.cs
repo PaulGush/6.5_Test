@@ -20,6 +20,11 @@ namespace Game.Player
         private InputAction _move, _look, _sprint, _jump;
         private bool _jumpQueued;
 
+        /// <summary>Grab/drop action (default E / gamepad north). Edge-read by <see cref="PlayerGrabber"/>.</summary>
+        public InputAction Interact { get; private set; }
+        /// <summary>Throw action (default Left Button / gamepad west). Edge-read by <see cref="PlayerGrabber"/>.</summary>
+        public InputAction Throw { get; private set; }
+
         private void Awake()
         {
             if (actions == null)
@@ -36,6 +41,10 @@ namespace Game.Player
             _look = _playerMap.FindAction("Look", throwIfNotFound: true);
             _sprint = _playerMap.FindAction("Sprint", throwIfNotFound: true);
             _jump = _playerMap.FindAction("Jump", throwIfNotFound: true);
+            // Grab/throw reuse the template's Interact/Attack actions so they're rebindable and
+            // already bound for keyboard+mouse and gamepad. PlayerGrabber edge-reads them.
+            Interact = _playerMap.FindAction("Interact", throwIfNotFound: true);
+            Throw = _playerMap.FindAction("Attack", throwIfNotFound: true);
 
             _jump.performed += OnJumpPerformed;
         }
