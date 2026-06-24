@@ -139,10 +139,31 @@ namespace Game.Gameplay
             if (!isServer || _held == null || holdAnchor == null) return;
 
             Rigidbody body = _held.Body;
-            // Target pose: orient by the carry rotation, then place so the grip point sits on the
-            // anchor (a plank gripped at one end extends forward, clear of the camera).
-            Quaternion targetRot = holdAnchor.rotation * _held.HoldLocalRotation;
-            Vector3 targetPos = holdAnchor.position - targetRot * _held.HoldLocalGrip;
+
+            // Build the carry anchor from the player's yaw plus a pitch that is clamped so the prop
+            // can tilt up but never dips below horizontal. Looking further down just leaves it level,
+            // which also keeps it from being driven into the floor. (holdAnchor is a child of the
+            // CameraPivot/aimSource, which carries the raw look pitch.)
+            Quaternion anchorRot;
+            Vector3 anchorPos;
+            if (aimSource != null)
+            {
+                float pitch = aimSource.localEulerAngles.x;
+                if (pitch > 180f) pitch -= 360f;   // to signed degrees; looking up is negative
+                pitch = Mathf.Min(pitch, 0f);      // clamp the downward (positive) half to level
+                anchorRot = transform.rotation * Quaternion.Euler(pitch, 0f, 0f);
+                anchorPos = aimSource.position + anchorRot * holdAnchor.localPosition;
+            }
+            else
+            {
+                anchorRot = holdAnchor.rotation;
+                anchorPos = holdAnchor.position;
+            }
+
+            // Orient by the carry rotation, then place so the grip point sits on the anchor
+            // (a plank gripped at one end extends forward, clear of the camera).
+            Quaternion targetRot = anchorRot * _held.HoldLocalRotation;
+            Vector3 targetPos = anchorPos - targetRot * _held.HoldLocalGrip;
 
             // Drive the prop with velocity (not MovePosition) so the physics solver still stops it
             // against the floor and walls instead of letting it clip through. Speed is capped so a
