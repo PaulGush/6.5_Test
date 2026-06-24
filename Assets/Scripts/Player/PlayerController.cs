@@ -45,6 +45,25 @@ namespace Game.Player
             ApplyMove(input, dt);
         }
 
+        /// <summary>
+        /// Hard-teleport to a pose and clear accumulated motion (vertical velocity, pitch).
+        /// The CharacterController must be disabled while moving the transform, otherwise it
+        /// resists the reposition. Called by the server on respawn; the NetworkTransform on the
+        /// same object replicates the snap to clients.
+        /// </summary>
+        public void Respawn(Vector3 position, Quaternion rotation)
+        {
+            bool wasEnabled = _cc.enabled;
+            _cc.enabled = false;
+            transform.SetPositionAndRotation(position, rotation);
+            _cc.enabled = wasEnabled;
+
+            _verticalVelocity = 0f;
+            _pitch = 0f;
+            if (cameraPivot != null)
+                cameraPivot.localRotation = Quaternion.identity;
+        }
+
         private void ApplyLook(in PlayerInputState input)
         {
             // Look deltas are already frame-accumulated, so they are not scaled by dt.

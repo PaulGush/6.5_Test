@@ -189,6 +189,10 @@ MonoBehaviour:
   syncMode: 0
   syncInterval: 0
   cameraPivot: {fileID: 7588974377487649533}
+  localPlayerReady: {fileID: 11400000, guid: 63bee1a47fec7e05d95904cec8e1fe2b, type: 2}
+  session: {fileID: 11400000, guid: a152e68eceb2b6803a62494c3bc30218, type: 2}
+  nameplatePrefab: {fileID: 8359370337378488824, guid: 607be2e44013d83ceb44e18531cac765, type: 3}
+  killY: -10
 --- !u!114 &5895216637682204413
 MonoBehaviour:
   m_ObjectHideFlags: 0

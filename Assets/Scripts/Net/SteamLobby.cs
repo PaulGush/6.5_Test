@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Mirror;
 using Steamworks;
 using UnityEngine;
@@ -10,14 +11,15 @@ namespace Game.Net
     ///  - Invitee: accepting an invite / "Join Game" fires GameLobbyJoinRequested ->
     ///    join the lobby -> read host SteamID -> set it as the transport address -> StartClient.
     ///
-    /// Requires <see cref="SteamManager"/> initialized and the NetworkManager's active
-    /// transport to be FizzySteamworks (so networkAddress is a SteamID, not an IP).
+    /// Exposed to the UI through <see cref="ILobbyService"/> (injected as a serialized reference,
+    /// not a singleton). Reads Steam state from the injected <see cref="SteamSession"/>.
     /// </summary>
-    public class SteamLobby : MonoBehaviour
+    public class SteamLobby : MonoBehaviour, ILobbyService
     {
-        public static SteamLobby Instance { get; private set; }
-
         private const string HostAddressKey = "HostAddress";
+
+        [Tooltip("Shared Steam state (assign the SteamSession asset).")]
+        [SerializeField] private SteamSession session;
 
         private NetworkManager _manager;
 
@@ -27,15 +29,16 @@ namespace Game.Net
         private Callback<GameLobbyJoinRequested_t> _joinRequested;
         private Callback<LobbyEnter_t> _lobbyEntered;
 
+        private bool SteamReady => session != null && session.Initialized;
+
         private void Awake()
         {
-            Instance = this;
             _manager = GetComponent<NetworkManager>();
         }
 
         private void Start()
         {
-            if (!SteamManager.Initialized)
+            if (!SteamReady)
             {
                 Debug.LogWarning("[Lobby] Steam not initialized; lobby features disabled.");
                 return;
@@ -53,11 +56,11 @@ namespace Game.Net
         /// <summary>Create a friends-only lobby and host once it exists.</summary>
         public void HostLobby()
         {
-            if (!SteamManager.Initialized) { Debug.LogError("[Lobby] Steam not initialized."); return; }
+            if (!SteamReady) { Debug.LogError("[Lobby] Steam not initialized."); return; }
             SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, _manager.maxConnections);
         }
 
-        /// <summary>Open the Steam overlay invite dialog for the current lobby.</summary>
+        /// <summary>Open the Steam overlay invite dialog for the current lobby (overlay-only).</summary>
         public void InviteFriends()
         {
             if (CurrentLobby.IsValid())
@@ -71,6 +74,54 @@ namespace Game.Net
             if (!CurrentLobby.IsValid()) return;
             SteamMatchmaking.LeaveLobby(CurrentLobby);
             CurrentLobby = CSteamID.Nil;
+        }
+
+        /// <summary>True when the Steam overlay is loaded (game launched via Steam) and usable.</summary>
+        public bool IsOverlayAvailable => SteamReady && SteamUtils.IsOverlayEnabled();
+
+        /// <summary>
+        /// Online Steam friends we can invite to the current lobby, sorted with same-game friends
+        /// first, then alphabetically. Returns empty when Steam isn't initialized (e.g. the editor)
+        /// or there is no active lobby, so callers are safe to invoke on any platform.
+        /// </summary>
+        public List<FriendInfo> GetInvitableFriends()
+        {
+            var result = new List<FriendInfo>();
+            if (!SteamReady || !CurrentLobby.IsValid()) return result;
+
+            uint appId = SteamUtils.GetAppID().m_AppId;
+            int count = SteamFriends.GetFriendCount(EFriendFlags.k_EFriendFlagImmediate);
+            for (int i = 0; i < count; i++)
+            {
+                CSteamID id = SteamFriends.GetFriendByIndex(i, EFriendFlags.k_EFriendFlagImmediate);
+                if (SteamFriends.GetFriendPersonaState(id) == EPersonaState.k_EPersonaStateOffline)
+                    continue;
+
+                bool inGame = SteamFriends.GetFriendGamePlayed(id, out FriendGameInfo_t game)
+                              && game.m_gameID.AppID().m_AppId == appId;
+                result.Add(new FriendInfo(id, SteamFriends.GetFriendPersonaName(id), inGame));
+            }
+
+            result.Sort((a, b) =>
+            {
+                if (a.InGame != b.InGame) return a.InGame ? -1 : 1; // in-game friends first
+                return string.Compare(a.Name, b.Name, System.StringComparison.OrdinalIgnoreCase);
+            });
+            return result;
+        }
+
+        /// <summary>
+        /// Send a Steam lobby invite straight to a specific friend. Unlike the overlay dialog,
+        /// this needs no Steam overlay, so it works in a build launched outside Steam. The friend
+        /// receives a Steam notification; accepting it fires GameLobbyJoinRequested.
+        /// </summary>
+        public void InviteToLobby(CSteamID friend)
+        {
+            if (!SteamReady) { Debug.LogWarning("[Lobby] Steam not initialized; cannot invite."); return; }
+            if (!CurrentLobby.IsValid()) { Debug.LogWarning("[Lobby] No active lobby to invite to."); return; }
+
+            bool ok = SteamMatchmaking.InviteUserToLobby(CurrentLobby, friend);
+            Debug.Log("[Lobby] InviteUserToLobby(" + friend + ") -> " + ok);
         }
 
         private void OnLobbyCreated(LobbyCreated_t cb)
