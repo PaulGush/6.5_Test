@@ -743,6 +743,14 @@ PrefabInstance:
       propertyPath: holdLocalEuler.y
       value: -90
       objectReference: {fileID: 0}
+    - target: {fileID: 3877455117576684357, guid: e086edfb3372d067a96e1a11ff116133, type: 3}
+      propertyPath: holdAnchorOffset.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3877455117576684357, guid: e086edfb3372d067a96e1a11ff116133, type: 3}
+      propertyPath: holdAnchorOffset.z
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 7324752161909599193, guid: e086edfb3372d067a96e1a11ff116133, type: 3}
       propertyPath: m_Mass
       value: 4
@@ -1698,6 +1706,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Game.Net.SteamManager
   session: {fileID: 11400000, guid: a152e68eceb2b6803a62494c3bc30218, type: 2}
+  enableSteamInEditor: 0
 --- !u!4 &1511492711
 Transform:
   m_ObjectHideFlags: 0
@@ -1932,6 +1941,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2a4740d2e543a30c2834bc0423f429c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Game.Net.TransportSelector
+  enableSteamInEditor: 0
 --- !u!114 &1974462110
 MonoBehaviour:
   m_ObjectHideFlags: 0

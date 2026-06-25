@@ -1,22 +1,20 @@
 using UnityEngine;
-#if !UNITY_EDITOR
 using Steamworks;
-#endif
 
 namespace Game.Net
 {
     /// <summary>
-    /// Owns the Steamworks lifecycle in standalone builds: initializes the Steam API, pumps
-    /// callbacks each frame, and shuts down on quit. Writes the result into the injected
-    /// <see cref="SteamSession"/> so other systems read shared Steam state from there instead of a
-    /// global singleton.
+    /// Owns the Steamworks lifecycle: initializes the Steam API, pumps callbacks each frame, and
+    /// shuts down on quit. Writes the result into the injected <see cref="SteamSession"/> so other
+    /// systems read shared Steam state from there instead of a global singleton.
     ///
-    /// IMPORTANT: Steam is initialized in BUILDS ONLY. On Linux, calling SteamAPI.Init() inside the
-    /// Unity Editor can hard-hang/crash the editor, so the init path is excluded from editor
-    /// compilation entirely via #if !UNITY_EDITOR. The editor uses KCP networking.
+    /// Standalone builds always initialize Steam. In the Unity Editor, init is OPT-IN via
+    /// <see cref="enableSteamInEditor"/> (or the <c>-steam</c> command-line flag) and OFF by
+    /// default, because on Linux calling SteamAPI.Init() inside the editor can hard-hang/crash it.
+    /// When off, the editor leaves Steam uninitialized and networking falls back to KCP.
     ///
     /// Requires the Steam client running and logged in, plus a steam_appid.txt (480 = Spacewar for
-    /// dev) next to the executable.
+    /// dev) next to the executable (project root in-editor).
     /// </summary>
     [DefaultExecutionOrder(-1000)]
     public class SteamManager : MonoBehaviour
@@ -24,9 +22,23 @@ namespace Game.Net
         [Tooltip("Shared Steam state this manager populates (assign the SteamSession asset).")]
         [SerializeField] private SteamSession session;
 
+        [Tooltip("Initialize the Steam API while running in the editor. OFF by default: on Linux, " +
+                 "SteamAPI.Init() inside the editor can hang/crash it. Turn on (or pass -steam) only " +
+                 "when you want to test the real Steam path in-editor with the Steam client running. " +
+                 "Keep this in sync with the matching toggle on TransportSelector.")]
+        [SerializeField] private bool enableSteamInEditor;
+
         // Process-level guard against a second SteamAPI.Init (e.g. on a scene reload). This is an
         // internal init latch, not a service-access singleton.
         private static bool _apiStarted;
+
+        // Builds always init; the editor only inits when explicitly opted in (toggle or -steam flag).
+        private bool ShouldInitSteam()
+        {
+            if (!Application.isEditor) return true;
+            if (enableSteamInEditor) return true;
+            return System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-steam") >= 0;
+        }
 
         private void Awake()
         {
@@ -39,11 +51,15 @@ namespace Game.Net
                 return;
             }
 
-#if UNITY_EDITOR
-            session.Initialized = false;
-            session.LocalName = "EditorPlayer";
-            Debug.Log("[Steam] Editor: SteamAPI is not initialized (builds only). Editor networking uses KCP.");
-#else
+            if (!ShouldInitSteam())
+            {
+                session.Initialized = false;
+                session.LocalName = "EditorPlayer";
+                Debug.Log("[Steam] Editor: SteamAPI not initialized (enableSteamInEditor is off). " +
+                          "Editor networking uses KCP.");
+                return;
+            }
+
             if (_apiStarted) return;
 
             try
@@ -67,10 +83,8 @@ namespace Game.Net
                 Debug.Log("[Steam] Initialized. Logged in as: " + session.LocalName +
                           " (" + SteamUser.GetSteamID() + ")");
             }
-#endif
         }
 
-#if !UNITY_EDITOR
         private void Update()
         {
             if (session != null && session.Initialized) SteamAPI.RunCallbacks();
@@ -86,6 +100,5 @@ namespace Game.Net
             session.Initialized = false;
             _apiStarted = false;
         }
-#endif
     }
 }

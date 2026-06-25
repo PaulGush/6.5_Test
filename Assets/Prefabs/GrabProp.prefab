@@ -211,3 +211,6 @@ MonoBehaviour:
   syncDirection: 0
   syncMode: 0
   syncInterval: 0
+  holdLocalGrip: {x: 0, y: 0, z: 0}
+  holdLocalEuler: {x: 0, y: 0, z: 0}
+  holdAnchorOffset: {x: 0, y: -0.2, z: 0.8}

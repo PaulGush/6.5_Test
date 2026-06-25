@@ -4,15 +4,21 @@ using UnityEngine;
 namespace Game.Gameplay
 {
     /// <summary>
-    /// A physics prop that a player can pick up, carry, drop, and throw. Server-authoritative:
-    /// the server owns the Rigidbody simulation (synced to clients by NetworkRigidbody). While
-    /// held, the server makes it kinematic and drives its pose from the carrier's hold anchor.
+    /// A physics prop that a player can pick up, carry, drop, and throw. When free it is a normal
+    /// server-authoritative dynamic body synced by NetworkRigidbody. While held it becomes kinematic
+    /// and EVERY client drives its pose locally from the carrier (see PlayerGrabber.LateUpdate):
+    /// the carry is fully determined by the carrier's already-synced transform, so the prop's own
+    /// per-prop network sync is suspended while held. That avoids the NetworkRigidbody overwriting the
+    /// locally-driven pose each frame, which otherwise made the held prop judder near the camera.
     /// </summary>
     [RequireComponent(typeof(Rigidbody))]
     public class Grabbable : NetworkBehaviour
     {
         public Rigidbody Body { get; private set; }
         public Collider Col { get; private set; }
+
+        // The prop's own transform sync; disabled while held (the carrier drives the pose locally).
+        private NetworkTransformBase _netTransform;
 
         [Header("Carry pose")]
         [Tooltip("Local-space point on the prop (in metres from its pivot) that snaps to the carrier's hold anchor. " +
@@ -22,29 +28,67 @@ namespace Game.Gameplay
                  "e.g. (0,-90,0) lays a long-X plank out along the carrier's forward.")]
         [SerializeField] private Vector3 holdLocalEuler = Vector3.zero;
 
+        [Tooltip("Extra carry offset in the carrier's anchor space (x = right, y = up, z = forward), " +
+                 "applied on top of the player's hold anchor. Push a bulky prop lower and further out " +
+                 "(e.g. a box: 0,-0.2,0.8) so it stops blocking the view. Long props gripped at one end " +
+                 "(e.g. the plank) usually leave this at zero.")]
+        [SerializeField] private Vector3 holdAnchorOffset = Vector3.zero;
+
         public Vector3 HoldLocalGrip => holdLocalGrip;
         public Quaternion HoldLocalRotation => Quaternion.Euler(holdLocalEuler);
+        public Vector3 HoldAnchorOffset => holdAnchorOffset;
 
-        [SyncVar] private bool _held;
+        [SyncVar(hook = nameof(OnHeldChanged))] private bool _held;
         public bool IsHeld => _held;
 
         private void Awake()
         {
             Body = GetComponent<Rigidbody>();
             Col = GetComponent<Collider>();
+            _netTransform = GetComponent<NetworkTransformBase>();
         }
 
-        /// <summary>Server: mark held/released. The prop stays a dynamic body either way so it keeps
-        /// colliding with the world; while held gravity is off (the carrier drives it by velocity)
-        /// and continuous detection guards against tunnelling.</summary>
+        // Late joiners (and the host) apply whatever the current held state already is.
+        public override void OnStartClient() => ApplyHeldState(_held);
+
+        /// <summary>Server entry point: mark held/released and apply the local physics state now;
+        /// the SyncVar fans the change out so every client applies the same state via the hook.</summary>
         [Server]
         public void SetHeld(bool held)
         {
             _held = held;
-            Body.useGravity = !held;
-            Body.collisionDetectionMode = held
-                ? CollisionDetectionMode.ContinuousDynamic
-                : CollisionDetectionMode.Discrete;
+            ApplyHeldState(held);
+        }
+
+        private void OnHeldChanged(bool _, bool held) => ApplyHeldState(held);
+
+        /// <summary>Switch the prop between free dynamic body and carried kinematic body, and suspend
+        /// its own transform sync while held (the carrier drives the pose locally on every client).</summary>
+        private void ApplyHeldState(bool held)
+        {
+            // While held the carrier positions the prop every frame on each client, so the prop's own
+            // NetworkRigidbody sync would only fight that (and re-introduce the judder). Re-enabled on release.
+            if (_netTransform != null) _netTransform.enabled = !held;
+
+            if (held)
+            {
+                // Flip to kinematic (Discrete is the only mode valid during the switch), then use a
+                // kinematic-compatible continuous mode. Interpolation off: the carrier sets the transform
+                // every render frame, so letting Unity interpolate would only fight that and re-add lag.
+                Body.collisionDetectionMode = CollisionDetectionMode.Discrete;
+                Body.isKinematic = true;
+                Body.useGravity = false;
+                Body.interpolation = RigidbodyInterpolation.None;
+                Body.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+            }
+            else
+            {
+                Body.collisionDetectionMode = CollisionDetectionMode.Discrete;
+                Body.isKinematic = false;
+                Body.useGravity = true;
+                Body.interpolation = RigidbodyInterpolation.Interpolate;
+                Body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            }
         }
     }
 }

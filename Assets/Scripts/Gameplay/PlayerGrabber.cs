@@ -25,10 +25,8 @@ namespace Game.Gameplay
         [SerializeField] private Transform aimSource;
         [SerializeField] private float grabRadius = 1.1f;
         [SerializeField] private float throwForce = 12f;
-        [Tooltip("Cap on how fast a carried prop chases the hold anchor (m/s). Keeps it from tunnelling.")]
-        [SerializeField] private float followMaxSpeed = 20f;
-        [Tooltip("Cap on how fast a carried prop spins toward its carry orientation (deg/s).")]
-        [SerializeField] private float followMaxAngularSpeed = 720f;
+        [Tooltip("Gap kept between a carried prop and a wall when its path forward is blocked (m).")]
+        [SerializeField] private float carrySkin = 0.02f;
 
         [Header("Prompt")]
         [Tooltip("Channel the HUD listens to (assign the GrabPromptChannel asset).")]
@@ -38,11 +36,11 @@ namespace Game.Gameplay
         [Tooltip("Radius of the look-ray, so you don't need pixel-perfect aim.")]
         [SerializeField] private float lookRadius = 0.3f;
 
-        // Server: whether a prop is currently held; synced so the owning client's HUD knows to show
-        // the Drop/Throw prompts even on a remote (non-host) client.
-        [SyncVar] private bool _holding;
+        // The prop currently held by this player, synced to everyone so (a) the owner's HUD shows the
+        // Drop/Throw prompts even on a remote client and (b) every client carries it locally in LateUpdate.
+        [SyncVar] private Grabbable _heldSync;
 
-        private Grabbable _held;            // server-only
+        private Grabbable _held;            // server-only handle for grab/throw logic
         private Collider _carrier;          // this player's own collider, ignored while carrying
         private PlayerInputReader _reader;  // source of the rebindable Interact/Attack actions
 
@@ -83,7 +81,7 @@ namespace Game.Gameplay
             }
 
             GrabPromptChannel.State state =
-                _holding ? GrabPromptChannel.State.Holding :
+                _heldSync != null ? GrabPromptChannel.State.Holding :
                 LookingAtGrabbable() ? GrabPromptChannel.State.CanGrab :
                 GrabPromptChannel.State.None;
 
@@ -134,16 +132,27 @@ namespace Game.Gameplay
             return pad.lastUpdateTime >= kbm;
         }
 
-        private void FixedUpdate()
+        // Carry the held prop by transform at render rate, exactly like the player body is moved, so
+        // it tracks the camera smoothly. (Driving it through physics at the fixed step made it visibly
+        // step/judder near the camera, since rendering runs far faster than the physics rate.) This runs
+        // on EVERY client off the synced carrier pose (the prop's own sync is suspended while held), so
+        // remote players see a smooth carry too. The prop is kinematic while held (see Grabbable); a
+        // sweep stops it short of walls so it can't clip through static geometry. LateUpdate runs after
+        // the body/look update this frame.
+        private void LateUpdate()
         {
-            if (!isServer || _held == null || holdAnchor == null) return;
+            if (_heldSync == null || holdAnchor == null) return;
 
-            Rigidbody body = _held.Body;
+            Rigidbody body = _heldSync.Body;
 
             // Build the carry anchor from the player's yaw plus a pitch that is clamped so the prop
             // can tilt up but never dips below horizontal. Looking further down just leaves it level,
             // which also keeps it from being driven into the floor. (holdAnchor is a child of the
             // CameraPivot/aimSource, which carries the raw look pitch.)
+            // Per-prop carry offset (anchor space) lets bulky props (e.g. a box) hang lower and
+            // further out so they don't fill the screen, without moving the shared hold anchor.
+            Vector3 propOffset = _heldSync.HoldAnchorOffset;
+
             Quaternion anchorRot;
             Vector3 anchorPos;
             if (aimSource != null)
@@ -152,41 +161,36 @@ namespace Game.Gameplay
                 if (pitch > 180f) pitch -= 360f;   // to signed degrees; looking up is negative
                 pitch = Mathf.Min(pitch, 0f);      // clamp the downward (positive) half to level
                 anchorRot = transform.rotation * Quaternion.Euler(pitch, 0f, 0f);
-                anchorPos = aimSource.position + anchorRot * holdAnchor.localPosition;
+                anchorPos = aimSource.position + anchorRot * (holdAnchor.localPosition + propOffset);
             }
             else
             {
                 anchorRot = holdAnchor.rotation;
-                anchorPos = holdAnchor.position;
+                anchorPos = holdAnchor.position + anchorRot * propOffset;
             }
 
             // Orient by the carry rotation, then place so the grip point sits on the anchor
             // (a plank gripped at one end extends forward, clear of the camera).
-            Quaternion targetRot = anchorRot * _held.HoldLocalRotation;
-            Vector3 targetPos = anchorPos - targetRot * _held.HoldLocalGrip;
+            Quaternion targetRot = anchorRot * _heldSync.HoldLocalRotation;
+            Vector3 targetPos = anchorPos - targetRot * _heldSync.HoldLocalGrip;
 
-            // Drive the prop with velocity (not MovePosition) so the physics solver still stops it
-            // against the floor and walls instead of letting it clip through. Speed is capped so a
-            // far target can't fling it through thin geometry in a single step.
-            Vector3 toTarget = targetPos - body.position;
-            Vector3 desiredVel = toTarget / Time.fixedDeltaTime;
-            if (desiredVel.sqrMagnitude > followMaxSpeed * followMaxSpeed)
-                desiredVel = desiredVel.normalized * followMaxSpeed;
-            body.linearVelocity = desiredVel;
+            // Sweep from the prop's current spot toward the target; if a wall is in the way, stop just
+            // short of it so a kinematic carry can't push the prop through static geometry. The carrier's
+            // own colliders are ignored (we already pass through them while carrying).
+            Vector3 from = body.position;
+            Vector3 delta = targetPos - from;
+            float dist = delta.magnitude;
+            if (dist > 1e-4f)
+            {
+                Vector3 dir = delta / dist;
+                if (body.SweepTest(dir, out RaycastHit hit, dist, QueryTriggerInteraction.Ignore)
+                    && hit.collider != _carrier && !hit.collider.transform.IsChildOf(transform))
+                {
+                    targetPos = from + dir * Mathf.Max(0f, hit.distance - carrySkin);
+                }
+            }
 
-            // Spin toward the target orientation, likewise capped.
-            Quaternion deltaRot = targetRot * Quaternion.Inverse(body.rotation);
-            deltaRot.ToAngleAxis(out float angleDeg, out Vector3 axis);
-            if (angleDeg > 180f) angleDeg -= 360f;
-            if (Mathf.Abs(angleDeg) > 0.05f && axis.sqrMagnitude > 1e-6f)
-            {
-                float angSpeed = Mathf.Clamp(angleDeg, -followMaxAngularSpeed, followMaxAngularSpeed) * Mathf.Deg2Rad / Time.fixedDeltaTime;
-                body.angularVelocity = axis.normalized * angSpeed;
-            }
-            else
-            {
-                body.angularVelocity = Vector3.zero;
-            }
+            body.transform.SetPositionAndRotation(targetPos, targetRot);
         }
 
         [Command]
@@ -199,7 +203,7 @@ namespace Game.Gameplay
             {
                 _held.SetHeld(true);
                 IgnoreCarrierCollision(true);
-                _holding = true;
+                _heldSync = _held; // sync the handle so every client carries it locally
             }
         }
 
@@ -239,7 +243,7 @@ namespace Game.Gameplay
             IgnoreCarrierCollision(false);
             _held.SetHeld(false);
             _held = null;
-            _holding = false;
+            _heldSync = null;
         }
 
         /// <summary>Toggle collision between the currently-held prop and this player's own body.</summary>
