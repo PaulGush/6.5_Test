@@ -43,6 +43,7 @@ namespace Game.Gameplay
         private Grabbable _held;            // server-only handle for grab/throw logic
         private Collider _carrier;          // this player's own collider, ignored while carrying
         private PlayerInputReader _reader;  // source of the rebindable Interact/Attack actions
+        private readonly Collider[] _overlapBuf = new Collider[16]; // reused by the carry depenetration
 
         private void Awake()
         {
@@ -190,7 +191,42 @@ namespace Game.Gameplay
                 }
             }
 
+            // Rotation/look can still swing the prop into geometry (the SweepTest above only covers the
+            // straight translation). Push it back out of any wall it now overlaps so turning can't clip it
+            // through — it slides along the surface instead.
+            targetPos = ResolvePenetration(_heldSync.Col, targetPos, targetRot);
+
             body.transform.SetPositionAndRotation(targetPos, targetRot);
+        }
+
+        /// <summary>Move <paramref name="pos"/> out of any static/kinematic geometry the prop would overlap
+        /// at the given pose, so a kinematic carry can't be rotated or shoved through walls. Ignores the
+        /// carrier, the prop itself, and free dynamic props (the physics solver handles those).</summary>
+        private Vector3 ResolvePenetration(Collider propCol, Vector3 pos, Quaternion rot)
+        {
+            if (propCol == null) return pos;
+
+            Vector3 half = propCol.bounds.extents + Vector3.one * 0.05f;
+            for (int iter = 0; iter < 3; iter++)
+            {
+                int n = Physics.OverlapBoxNonAlloc(pos, half, _overlapBuf, rot, ~0, QueryTriggerInteraction.Ignore);
+                bool moved = false;
+                for (int i = 0; i < n; i++)
+                {
+                    Collider o = _overlapBuf[i];
+                    if (o == propCol || o == _carrier) continue;
+                    if (o.transform.IsChildOf(transform)) continue;                               // carrier's own colliders
+                    if (o.attachedRigidbody != null && !o.attachedRigidbody.isKinematic) continue; // free dynamic prop: let the solver handle it
+                    if (Physics.ComputePenetration(propCol, pos, rot, o, o.transform.position, o.transform.rotation,
+                            out Vector3 dir, out float depth))
+                    {
+                        pos += dir * depth;
+                        moved = true;
+                    }
+                }
+                if (!moved) break;
+            }
+            return pos;
         }
 
         [Command]
