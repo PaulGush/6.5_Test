@@ -21,6 +21,12 @@ namespace Game.Player
         [SerializeField] private float jumpHeight = 1.4f;
         [SerializeField] private float gravity = -20f;
 
+        [Header("Launch")]
+        [Tooltip("How fast launch-imparted horizontal momentum bleeds off while airborne (m/s²).")]
+        [SerializeField] private float airLaunchDamping = 6f;
+        [Tooltip("How fast launch momentum bleeds off once grounded again (m/s²).")]
+        [SerializeField] private float groundLaunchDamping = 40f;
+
         [Header("Look")]
         [Tooltip("Degrees of rotation per unit of look delta.")]
         [SerializeField] private float lookSensitivity = 0.12f;
@@ -32,6 +38,7 @@ namespace Game.Player
         private CharacterController _cc;
         private float _pitch;
         private float _verticalVelocity;
+        private Vector3 _externalVel; // launch-imparted horizontal momentum, bleeds off over time
 
         private void Awake()
         {
@@ -43,6 +50,14 @@ namespace Game.Player
         {
             ApplyLook(input);
             ApplyMove(input, dt);
+        }
+
+        /// <summary>Impart a launch velocity (e.g. a jump pad). Vertical feeds the jump velocity;
+        /// horizontal becomes air momentum that bleeds off after landing. Called on the server.</summary>
+        public void Launch(Vector3 velocity)
+        {
+            _verticalVelocity = velocity.y;
+            _externalVel = new Vector3(velocity.x, 0f, velocity.z);
         }
 
         /// <summary>
@@ -59,6 +74,7 @@ namespace Game.Player
             _cc.enabled = wasEnabled;
 
             _verticalVelocity = 0f;
+            _externalVel = Vector3.zero;
             _pitch = 0f;
             if (cameraPivot != null)
                 cameraPivot.localRotation = Quaternion.identity;
@@ -80,18 +96,22 @@ namespace Game.Player
             Vector3 wish = transform.right * input.Move.x + transform.forward * input.Move.y;
             wish = Vector3.ClampMagnitude(wish, 1f) * speed;
 
-            if (_cc.isGrounded)
+            // Grounded only resets a downward velocity; a positive (jumping/just-launched) vertical is
+            // left alone so a jump pad fired while still touching the pad isn't immediately cancelled.
+            if (_cc.isGrounded && _verticalVelocity <= 0f)
             {
                 _verticalVelocity = -2f; // small downward bias keeps isGrounded stable on slopes/steps
                 if (input.JumpPressed)
                     _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, groundLaunchDamping * dt);
             }
             else
             {
                 _verticalVelocity += gravity * dt;
+                _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, airLaunchDamping * dt);
             }
 
-            Vector3 velocity = wish + Vector3.up * _verticalVelocity;
+            Vector3 velocity = wish + _externalVel + Vector3.up * _verticalVelocity;
             _cc.Move(velocity * dt);
         }
     }

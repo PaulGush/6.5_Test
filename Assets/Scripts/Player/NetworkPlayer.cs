@@ -81,6 +81,14 @@ namespace Game.Player
             _spawnRot = rotation;
         }
 
+        /// <summary>Server: send this player back to its last checkpoint (called by a hazard volume).</summary>
+        [Server]
+        public void RespawnAtCheckpoint() => ServerRespawn();
+
+        /// <summary>Server: impart a launch velocity to this player (called by a jump pad).</summary>
+        [Server]
+        public void Launch(Vector3 velocity) => _controller.Launch(velocity);
+
         public override void OnStartClient()
         {
             // Apply whatever name is already synced (covers late joiners / initial value).
