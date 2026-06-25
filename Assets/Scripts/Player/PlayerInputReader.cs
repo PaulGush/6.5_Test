@@ -17,8 +17,9 @@ namespace Game.Player
         [SerializeField] private InputActionAsset actions;
 
         private InputActionMap _playerMap;
-        private InputAction _move, _look, _sprint, _jump;
+        private InputAction _move, _look, _sprint, _jump, _crouch, _crouchToggle;
         private bool _jumpQueued;
+        private bool _crouchToggled; // flipped by the toggle key (C); OR'd with hold-to-crouch (Ctrl)
 
         /// <summary>Grab/drop action (default E / gamepad north). Edge-read by <see cref="PlayerGrabber"/>.</summary>
         public InputAction Interact { get; private set; }
@@ -41,12 +42,15 @@ namespace Game.Player
             _look = _playerMap.FindAction("Look", throwIfNotFound: true);
             _sprint = _playerMap.FindAction("Sprint", throwIfNotFound: true);
             _jump = _playerMap.FindAction("Jump", throwIfNotFound: true);
+            _crouch = _playerMap.FindAction("Crouch", throwIfNotFound: true);
+            _crouchToggle = _playerMap.FindAction("CrouchToggle", throwIfNotFound: true);
             // Grab/throw reuse the template's Interact/Attack actions so they're rebindable and
             // already bound for keyboard+mouse and gamepad. PlayerGrabber edge-reads them.
             Interact = _playerMap.FindAction("Interact", throwIfNotFound: true);
             Throw = _playerMap.FindAction("Attack", throwIfNotFound: true);
 
             _jump.performed += OnJumpPerformed;
+            _crouchToggle.performed += OnCrouchTogglePerformed;
         }
 
         private void OnEnable() => _playerMap?.Enable();
@@ -55,9 +59,11 @@ namespace Game.Player
         private void OnDestroy()
         {
             if (_jump != null) _jump.performed -= OnJumpPerformed;
+            if (_crouchToggle != null) _crouchToggle.performed -= OnCrouchTogglePerformed;
         }
 
         private void OnJumpPerformed(InputAction.CallbackContext _) => _jumpQueued = true;
+        private void OnCrouchTogglePerformed(InputAction.CallbackContext _) => _crouchToggled = !_crouchToggled;
 
         /// <summary>Reads the current intent and clears edge-triggered flags.</summary>
         public PlayerInputState Sample()
@@ -67,6 +73,7 @@ namespace Game.Player
                 Move = _move.ReadValue<Vector2>(),
                 Look = _look.ReadValue<Vector2>(),
                 Sprint = _sprint.IsPressed(),
+                Crouch = _crouch.IsPressed() || _crouchToggled, // Ctrl held OR C toggled
                 JumpPressed = _jumpQueued,
             };
             _jumpQueued = false;

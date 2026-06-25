@@ -1,5 +1,6 @@
 using Mirror;
 using UnityEngine;
+using Game.Gameplay;
 
 namespace Game.Player
 {
@@ -50,9 +51,13 @@ namespace Game.Player
         private NetworkTransformBase _netTransform;
         private NameplateView _nameplate;
 
-        // Server-only: the pose to respawn this player at (where they first spawned).
+        // Server-only: the pose to respawn this player at (last checkpoint, or initial spawn).
         private Vector3 _spawnPos;
         private Quaternion _spawnRot;
+        // Server-only: the original spawn pose, used by a full run restart (ignores checkpoints).
+        private Vector3 _startPos;
+        private Quaternion _startRot;
+        private RunManager _run; // cached scene run clock (server-side restart)
 
         private void Awake()
         {
@@ -68,9 +73,10 @@ namespace Game.Player
 
         public override void OnStartServer()
         {
-            // Players spawn at a NetworkStartPosition; remember it as the respawn pose.
-            _spawnPos = transform.position;
-            _spawnRot = transform.rotation;
+            // Players spawn at a NetworkStartPosition; remember it as both the checkpoint respawn
+            // pose and the fixed start pose (the latter is used by a full run restart).
+            _spawnPos = _startPos = transform.position;
+            _spawnRot = _startRot = transform.rotation;
         }
 
         /// <summary>Server: update the respawn pose (called by a checkpoint trigger).</summary>
@@ -88,6 +94,38 @@ namespace Game.Player
         /// <summary>Server: impart a launch velocity to this player (called by a jump pad).</summary>
         [Server]
         public void Launch(Vector3 velocity) => _controller.Launch(velocity);
+
+        /// <summary>Server: teleport to the original start and clear any checkpoint (full restart).</summary>
+        [Server]
+        public void RespawnAtStart()
+        {
+            _spawnPos = _startPos;
+            _spawnRot = _startRot;
+            ServerRespawn();
+        }
+
+        /// <summary>Owner-side entry point (UI button / restart key): ask the server to restart the run.</summary>
+        public void RequestRestart()
+        {
+            if (isLocalPlayer) CmdRequestRestart();
+        }
+
+        // Owner -> server: reset the shared run clock, props, and send everyone back to the start.
+        [Command]
+        private void CmdRequestRestart()
+        {
+            if (_run == null) _run = FindFirstObjectByType<RunManager>();
+            if (_run != null) _run.ResetRun();
+
+            // Drop anything being carried, then return every prop to its spawn pose.
+            foreach (PlayerGrabber grabber in FindObjectsByType<PlayerGrabber>(FindObjectsSortMode.None))
+                grabber.ServerForceDrop();
+            foreach (Grabbable prop in FindObjectsByType<Grabbable>(FindObjectsSortMode.None))
+                prop.ResetToStart();
+
+            foreach (NetworkPlayer p in FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None))
+                p.RespawnAtStart();
+        }
 
         public override void OnStartClient()
         {
@@ -135,7 +173,7 @@ namespace Game.Player
 
             PlayerInputState s = _input.Sample();
             if (DebugAutoWalk) s.Move = new Vector2(0f, 1f); // forward, for replication testing
-            CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, Time.deltaTime);
+            CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
         }
 
         /// <summary>Server-authoritative respawn: reset the simulation pose and snap clients.</summary>
@@ -150,7 +188,7 @@ namespace Game.Player
 
         // Owner -> server. Server is authoritative over the simulation.
         [Command]
-        private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, float dt)
+        private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, float dt)
         {
             // Never trust client-supplied dt blindly; clamp to avoid teleport exploits/hitches.
             dt = Mathf.Clamp(dt, 0f, 0.1f);
@@ -160,6 +198,7 @@ namespace Game.Player
                 Move = move,
                 Look = look,
                 Sprint = sprint,
+                Crouch = crouch,
                 JumpPressed = jumpPressed,
             };
             _controller.Tick(input, dt);

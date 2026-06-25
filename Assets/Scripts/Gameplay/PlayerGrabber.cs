@@ -282,6 +282,11 @@ namespace Game.Gameplay
             _heldSync = null;
         }
 
+        /// <summary>Server: drop whatever this player is carrying (used by a run restart before props
+        /// are reset to their start poses).</summary>
+        [Server]
+        public void ServerForceDrop() => Release();
+
         /// <summary>Toggle collision between the currently-held prop and this player's own body.</summary>
         [Server]
         private void IgnoreCarrierCollision(bool ignore)

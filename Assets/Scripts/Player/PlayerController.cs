@@ -27,6 +27,16 @@ namespace Game.Player
         [Tooltip("How fast launch momentum bleeds off once grounded again (m/s²).")]
         [SerializeField] private float groundLaunchDamping = 40f;
 
+        [Header("Crouch")]
+        [Tooltip("CharacterController height while crouched.")]
+        [SerializeField] private float crouchHeight = 1f;
+        [Tooltip("Move speed while crouched (m/s).")]
+        [SerializeField] private float crouchSpeed = 2.5f;
+        [Tooltip("How quickly the crouch transition plays (units of the 0..1 blend per second).")]
+        [SerializeField] private float crouchLerpSpeed = 8f;
+        [Tooltip("How far the camera lowers when fully crouched (m).")]
+        [SerializeField] private float crouchCameraDrop = 0.6f;
+
         [Header("Look")]
         [Tooltip("Degrees of rotation per unit of look delta.")]
         [SerializeField] private float lookSensitivity = 0.12f;
@@ -40,15 +50,24 @@ namespace Game.Player
         private float _verticalVelocity;
         private Vector3 _externalVel; // launch-imparted horizontal momentum, bleeds off over time
 
+        // Crouch: captured standing pose + the current 0..1 crouch blend.
+        private float _standHeight, _bottomOffset, _standCamY, _crouchT;
+        private Vector3 _standCenter;
+
         private void Awake()
         {
             _cc = GetComponent<CharacterController>();
+            _standHeight = _cc.height;
+            _standCenter = _cc.center;
+            _bottomOffset = _standCenter.y - _standHeight * 0.5f; // feet offset from the transform origin
+            if (cameraPivot != null) _standCamY = cameraPivot.localPosition.y;
         }
 
         /// <summary>Deterministic movement step. The server-authoritative entry point.</summary>
         public void Tick(in PlayerInputState input, float dt)
         {
             ApplyLook(input);
+            ApplyCrouch(input, dt);
             ApplyMove(input, dt);
         }
 
@@ -76,8 +95,49 @@ namespace Game.Player
             _verticalVelocity = 0f;
             _externalVel = Vector3.zero;
             _pitch = 0f;
+            // Reset crouch back to standing.
+            _crouchT = 0f;
+            _cc.height = _standHeight;
+            _cc.center = _standCenter;
             if (cameraPivot != null)
+            {
                 cameraPivot.localRotation = Quaternion.identity;
+                Vector3 lp = cameraPivot.localPosition; lp.y = _standCamY; cameraPivot.localPosition = lp;
+            }
+        }
+
+        // Blend toward crouched/standing, shrinking the controller (feet stay planted) and lowering the
+        // camera. When the crouch button is released, only stand back up if there is headroom above.
+        private void ApplyCrouch(in PlayerInputState input, float dt)
+        {
+            float target = input.Crouch ? 1f : (CanStand() ? 0f : 1f);
+            _crouchT = Mathf.MoveTowards(_crouchT, target, crouchLerpSpeed * dt);
+
+            float h = Mathf.Lerp(_standHeight, crouchHeight, _crouchT);
+            _cc.height = h;
+            Vector3 c = _standCenter;
+            c.y = _bottomOffset + h * 0.5f;
+            _cc.center = c;
+
+            if (cameraPivot != null)
+            {
+                Vector3 lp = cameraPivot.localPosition;
+                lp.y = _standCamY - crouchCameraDrop * _crouchT;
+                cameraPivot.localPosition = lp;
+            }
+        }
+
+        // Is there room above to return to full height? Sweeps the standing capsule upward from the
+        // feet; colliders overlapping the start sphere (the floor, our own crouched body) are ignored by
+        // SphereCast, so only a genuine ceiling above blocks standing.
+        private bool CanStand()
+        {
+            if (_standHeight - _cc.height <= 0.02f) return true;
+            float r = Mathf.Max(0.05f, _cc.radius - 0.05f);
+            Vector3 feet = transform.position + new Vector3(0f, _cc.center.y - _cc.height * 0.5f, 0f);
+            Vector3 from = feet + Vector3.up * r;
+            float castDist = _standHeight - 2f * r;
+            return !Physics.SphereCast(from, r, Vector3.up, out RaycastHit _, castDist, ~0, QueryTriggerInteraction.Ignore);
         }
 
         private void ApplyLook(in PlayerInputState input)
@@ -92,7 +152,7 @@ namespace Game.Player
 
         private void ApplyMove(in PlayerInputState input, float dt)
         {
-            float speed = input.Sprint ? sprintSpeed : walkSpeed;
+            float speed = input.Crouch ? crouchSpeed : input.Sprint ? sprintSpeed : walkSpeed;
             Vector3 wish = transform.right * input.Move.x + transform.forward * input.Move.y;
             wish = Vector3.ClampMagnitude(wish, 1f) * speed;
 

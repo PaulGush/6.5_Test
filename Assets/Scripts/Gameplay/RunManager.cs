@@ -35,9 +35,10 @@ namespace Game.Gameplay
         [Server]
         public void StartRun()
         {
-            if (_running || _finished) return;
+            if (_running) return;       // already timing; ignore re-entry mid-run
             _startTime = NetworkTime.time;
             _running = true;
+            _finished = false;          // clear any prior finish so the course is replayable
         }
 
         [Server]

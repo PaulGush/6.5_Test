@@ -41,6 +41,10 @@ namespace Game.Gameplay
         [SyncVar(hook = nameof(OnHeldChanged))] private bool _held;
         public bool IsHeld => _held;
 
+        // Server-only: the prop's pose at spawn, restored by a run restart.
+        private Vector3 _startPos;
+        private Quaternion _startRot;
+
         private void Awake()
         {
             Body = GetComponent<Rigidbody>();
@@ -48,8 +52,26 @@ namespace Game.Gameplay
             _netTransform = GetComponent<NetworkTransformBase>();
         }
 
+        // Server: remember where this prop started so a restart can put it back.
+        public override void OnStartServer()
+        {
+            _startPos = transform.position;
+            _startRot = transform.rotation;
+        }
+
         // Late joiners (and the host) apply whatever the current held state already is.
         public override void OnStartClient() => ApplyHeldState(_held);
+
+        /// <summary>Server: return the prop to its spawn pose, stationary. Assumes it has already been
+        /// released (the carrier dropped it) so it's a free dynamic body again. Teleports (no slide).</summary>
+        [Server]
+        public void ResetToStart()
+        {
+            Body.linearVelocity = Vector3.zero;
+            Body.angularVelocity = Vector3.zero;
+            if (_netTransform != null) _netTransform.ServerTeleport(_startPos, _startRot);
+            else transform.SetPositionAndRotation(_startPos, _startRot);
+        }
 
         /// <summary>Server entry point: mark held/released and apply the local physics state now;
         /// the SyncVar fans the change out so every client applies the same state via the hook.</summary>

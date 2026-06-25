@@ -10,6 +10,7 @@ namespace Game.Player
         public UnityEngine.Vector2 Move;   // x = strafe, y = forward
         public UnityEngine.Vector2 Look;   // mouse/stick delta (already frame-accumulated)
         public bool Sprint;
+        public bool Crouch;                 // held while the crouch button is down
         public bool JumpPressed;            // edge-triggered: true only on the sample the press occurred
     }
 }
