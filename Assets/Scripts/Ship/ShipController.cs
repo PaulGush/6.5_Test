@@ -25,10 +25,10 @@ namespace Game.Ship
         [Header("Sails")]
         [Tooltip("Forward acceleration (m/s²) per sail level; element 0 is furled.")]
         [SerializeField] private float[] sailThrust = { 0f, 1.2f, 2.4f, 3.6f };
-        [Tooltip("Visual root shown while the sails are furled (level 0).")]
-        [SerializeField] private GameObject sailsFurledVisual;
-        [Tooltip("Visual root shown while the sails are set (level 1+).")]
-        [SerializeField] private GameObject sailsSetVisual;
+        [Tooltip("Visual roots shown while the sails are furled (level 0). Multi-mast ships have several.")]
+        [SerializeField] private GameObject[] sailsFurledVisuals = { };
+        [Tooltip("Visual roots shown while the sails are set (level 1+).")]
+        [SerializeField] private GameObject[] sailsSetVisuals = { };
 
         [Header("Steering")]
         [Tooltip("Yaw acceleration (deg/s²) at full rudder and full steerage speed.")]
@@ -160,8 +160,12 @@ namespace Game.Ship
 
         private void ApplySailVisuals(int level)
         {
-            if (sailsFurledVisual != null) sailsFurledVisual.SetActive(level == 0);
-            if (sailsSetVisual != null) sailsSetVisual.SetActive(level > 0);
+            if (sailsFurledVisuals != null)
+                foreach (GameObject go in sailsFurledVisuals)
+                    if (go != null) go.SetActive(level == 0);
+            if (sailsSetVisuals != null)
+                foreach (GameObject go in sailsSetVisuals)
+                    if (go != null) go.SetActive(level > 0);
         }
     }
 }

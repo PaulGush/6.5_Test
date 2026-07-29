@@ -37,6 +37,12 @@ namespace Game.Player
         [Tooltip("How far the camera lowers when fully crouched (m).")]
         [SerializeField] private float crouchCameraDrop = 0.6f;
 
+        [Header("Climb")]
+        [Tooltip("Vertical speed on a ladder (m/s); forward input climbs, back descends.")]
+        [SerializeField] private float climbSpeed = 3f;
+        [Tooltip("Horizontal input is damped to this fraction while climbing.")]
+        [SerializeField] private float climbMoveFactor = 0.4f;
+
         [Header("Look")]
         [Tooltip("Degrees of rotation per unit of look delta.")]
         [SerializeField] private float lookSensitivity = 0.12f;
@@ -49,6 +55,7 @@ namespace Game.Player
         private float _pitch;
         private float _verticalVelocity;
         private Vector3 _externalVel; // launch-imparted horizontal momentum, bleeds off over time
+        private readonly Collider[] _ladderBuf = new Collider[8]; // reused by the climb overlap check
 
         // Crouch: captured standing pose + the current 0..1 crouch blend.
         private float _standHeight, _bottomOffset, _standCamY, _crouchT;
@@ -156,9 +163,20 @@ namespace Game.Player
             Vector3 wish = transform.right * input.Move.x + transform.forward * input.Move.y;
             wish = Vector3.ClampMagnitude(wish, 1f) * speed;
 
+            // Climb mode: inside a Ladder volume, forward/back input becomes vertical motion and
+            // gravity is off. Horizontal input still works (damped) so the player can press into
+            // the rungs and, at the top, push over onto the platform. Jump hops off.
+            if (OnLadder())
+            {
+                wish *= climbMoveFactor;
+                _verticalVelocity = input.Move.y * climbSpeed;
+                if (input.JumpPressed)
+                    _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, airLaunchDamping * dt);
+            }
             // Grounded only resets a downward velocity; a positive (jumping/just-launched) vertical is
             // left alone so a jump pad fired while still touching the pad isn't immediately cancelled.
-            if (_cc.isGrounded && _verticalVelocity <= 0f)
+            else if (_cc.isGrounded && _verticalVelocity <= 0f)
             {
                 _verticalVelocity = -2f; // small downward bias keeps isGrounded stable on slopes/steps
                 if (input.JumpPressed)
@@ -173,6 +191,18 @@ namespace Game.Player
 
             Vector3 velocity = wish + _externalVel + Vector3.up * _verticalVelocity;
             _cc.Move(velocity * dt);
+        }
+
+        // Is the capsule (slightly expanded) touching a Ladder trigger volume?
+        private bool OnLadder()
+        {
+            Vector3 center = transform.position + _cc.center;
+            float half = Mathf.Max(0f, _cc.height * 0.5f - _cc.radius);
+            int n = Physics.OverlapCapsuleNonAlloc(center - Vector3.up * half, center + Vector3.up * half,
+                _cc.radius + 0.2f, _ladderBuf, ~0, QueryTriggerInteraction.Collide);
+            for (int i = 0; i < n; i++)
+                if (_ladderBuf[i].GetComponentInParent<Game.Gameplay.Ladder>() != null) return true;
+            return false;
         }
     }
 }

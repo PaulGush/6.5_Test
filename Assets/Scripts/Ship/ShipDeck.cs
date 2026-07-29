@@ -36,7 +36,18 @@ namespace Game.Ship
         {
             if (!NetworkServer.active || ship == null) return;
             var rider = other.GetComponentInParent<ShipRider>();
-            if (rider != null && rider.CurrentShip == ship) rider.ServerBoard(null);
+            if (rider == null || rider.CurrentShip != ship) return;
+
+            // A ship can have several boarding volumes (hull-tight deck + wide aloft rig);
+            // only leaving them ALL counts as going ashore.
+            Vector3 p = other.bounds.center;
+            foreach (ShipDeck deck in ship.GetComponentsInChildren<ShipDeck>())
+            {
+                if (deck == this) continue;
+                var col = deck.GetComponent<Collider>();
+                if (col != null && col.bounds.Contains(p)) return;
+            }
+            rider.ServerBoard(null);
         }
     }
 }
