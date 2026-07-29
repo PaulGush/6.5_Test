@@ -1,0 +1,167 @@
+using Mirror;
+using UnityEngine;
+
+namespace Game.Ship
+{
+    /// <summary>
+    /// Server-authoritative free-moving ship. A genuine dynamic Rigidbody — collisions with rocks
+    /// and docks produce real momentum, glancing bounces, and spin — but constrained to the water
+    /// plane (Y position and pitch/roll frozen), so there is no buoyancy simulation to destabilise
+    /// the deck or the players standing on it.
+    ///
+    /// Motion model, applied by the server each physics step:
+    ///  - Thrust along the bow, scaled by the current sail level.
+    ///  - Rudder torque around yaw, scaled by speed through the water (no steerage way when
+    ///    stopped; reversing inverts the helm like a real boat).
+    ///  - Anisotropic water drag: much higher sideways than forward, so hard turns drift.
+    ///  - A dropped anchor multiplies drag and kills thrust — the emergency brake.
+    ///
+    /// Clients see the ship via the NetworkTransform on this object; their Rigidbody is kinematic.
+    /// Sail level / rudder / anchor are SyncVars so stations and visuals read them anywhere.
+    /// </summary>
+    [RequireComponent(typeof(Rigidbody))]
+    public class ShipController : NetworkBehaviour
+    {
+        [Header("Sails")]
+        [Tooltip("Forward acceleration (m/s²) per sail level; element 0 is furled.")]
+        [SerializeField] private float[] sailThrust = { 0f, 1.2f, 2.4f, 3.6f };
+        [Tooltip("Visual root shown while the sails are furled (level 0).")]
+        [SerializeField] private GameObject sailsFurledVisual;
+        [Tooltip("Visual root shown while the sails are set (level 1+).")]
+        [SerializeField] private GameObject sailsSetVisual;
+
+        [Header("Steering")]
+        [Tooltip("Yaw acceleration (deg/s²) at full rudder and full steerage speed.")]
+        [SerializeField] private float rudderTurnAccel = 14f;
+        [Tooltip("Speed through the water (m/s) at which the rudder reaches full authority.")]
+        [SerializeField] private float steerageSpeed = 3f;
+
+        [Header("Water")]
+        [Tooltip("Drag on forward motion (fraction of velocity shed per second).")]
+        [SerializeField] private float forwardDrag = 0.25f;
+        [Tooltip("Drag on sideways motion. Keep well above forward drag so the ship carves, not slides.")]
+        [SerializeField] private float lateralDrag = 1.6f;
+        [Tooltip("Drag on yaw rotation.")]
+        [SerializeField] private float yawDrag = 0.7f;
+
+        [Header("Anchor")]
+        [Tooltip("Extra drag on everything while the anchor is down.")]
+        [SerializeField] private float anchorDrag = 3f;
+
+        // Helm/station state, synced so every client can drive visuals (wheel spin, sails) locally.
+        [SyncVar] private float _rudder;                          // -1..1
+        [SyncVar(hook = nameof(OnSailLevelChanged))] private int _sailLevel;
+        [SyncVar] private bool _anchored;
+
+        /// <summary>Current rudder deflection, -1 (hard port) to 1 (hard starboard).</summary>
+        public float Rudder => _rudder;
+        public int SailLevel => _sailLevel;
+        public int MaxSailLevel => sailThrust.Length - 1;
+        public bool Anchored => _anchored;
+        /// <summary>Signed speed along the bow in m/s. Only meaningful on the server.</summary>
+        public float ForwardSpeed => Vector3.Dot(_rb.linearVelocity, transform.forward);
+
+        private Rigidbody _rb;
+        private float _planeY;            // server: the water-plane height the ship is pinned to
+        private bool _warnedPlanarDrift;  // server: log the first correction so drift causes surface
+
+        private void Awake()
+        {
+            _rb = GetComponent<Rigidbody>();
+            // Planar constraint: free X/Z translation and yaw; the water "holds" everything else.
+            _rb.constraints = RigidbodyConstraints.FreezePositionY
+                            | RigidbodyConstraints.FreezeRotationX
+                            | RigidbodyConstraints.FreezeRotationZ;
+            _rb.useGravity = false;
+            _rb.linearDamping = 0f;   // drag is modelled explicitly, per-axis, in FixedUpdate
+            _rb.angularDamping = 0f;
+            _rb.interpolation = RigidbodyInterpolation.Interpolate;
+            ApplySailVisuals(_sailLevel);
+        }
+
+        public override void OnStartServer() => _planeY = transform.position.y;
+
+        public override void OnStartClient()
+        {
+            // Remote ships are driven by the NetworkTransform, not local physics.
+            if (!isServer) _rb.isKinematic = true;
+            ApplySailVisuals(_sailLevel);
+        }
+
+        [Server] public void SetRudder(float value) => _rudder = Mathf.Clamp(value, -1f, 1f);
+
+        [Server] public void ChangeSail(int delta) =>
+            _sailLevel = Mathf.Clamp(_sailLevel + delta, 0, MaxSailLevel);
+
+        [Server] public void SetAnchored(bool anchored) => _anchored = anchored;
+
+        [ServerCallback]
+        private void FixedUpdate()
+        {
+            Vector3 v = _rb.linearVelocity;
+            float fwdSpeed = Vector3.Dot(v, transform.forward);
+
+            // Thrust from the sails (the anchor holds the ship regardless of canvas).
+            if (!_anchored)
+                _rb.AddForce(transform.forward * sailThrust[_sailLevel], ForceMode.Acceleration);
+
+            // Rudder authority builds with speed through the water and flips when making sternway.
+            float authority = Mathf.Clamp01(Mathf.Abs(fwdSpeed) / Mathf.Max(0.01f, steerageSpeed));
+            float sign = fwdSpeed >= 0f ? 1f : -1f;
+            _rb.AddTorque(0f, _rudder * rudderTurnAccel * Mathf.Deg2Rad * authority * sign,
+                0f, ForceMode.Acceleration);
+
+            // Anisotropic water drag, plus the anchor's contribution on every axis.
+            Vector3 fwd = transform.forward * fwdSpeed;
+            Vector3 lat = v - fwd;
+            float extra = _anchored ? anchorDrag : 0f;
+            _rb.AddForce(-fwd * (forwardDrag + extra) - lat * (lateralDrag + extra),
+                ForceMode.Acceleration);
+            _rb.AddTorque(-_rb.angularVelocity * (yawDrag + extra), ForceMode.Acceleration);
+
+            EnforcePlane();
+        }
+
+        // Hard planar lock, belt-and-braces on top of the Rigidbody constraints: whatever manages
+        // to pitch/roll/heave the ship (a collider glitch, an unexpected torque path), flatten it
+        // back to yaw-only at the pinned height before anyone can see it, and surface the first
+        // occurrence in the log so the cause can be chased.
+        [Server]
+        private void EnforcePlane()
+        {
+            Vector3 e = _rb.rotation.eulerAngles;
+            bool tilted = Mathf.Abs(Mathf.DeltaAngle(0f, e.x)) > 0.05f
+                       || Mathf.Abs(Mathf.DeltaAngle(0f, e.z)) > 0.05f;
+            if (tilted)
+            {
+                _rb.rotation = Quaternion.Euler(0f, e.y, 0f);
+                Vector3 av = _rb.angularVelocity;
+                _rb.angularVelocity = new Vector3(0f, av.y, 0f);
+            }
+
+            Vector3 p = _rb.position;
+            bool heaved = Mathf.Abs(p.y - _planeY) > 0.001f;
+            if (heaved)
+            {
+                _rb.position = new Vector3(p.x, _planeY, p.z);
+                Vector3 v = _rb.linearVelocity;
+                _rb.linearVelocity = new Vector3(v.x, 0f, v.z);
+            }
+
+            if ((tilted || heaved) && !_warnedPlanarDrift)
+            {
+                _warnedPlanarDrift = true;
+                Debug.LogWarning($"[ShipController] Corrected off-plane drift (tilt={tilted}, heave={heaved}). " +
+                                 "Something is fighting the planar constraints — check for stray colliders/forces.", this);
+            }
+        }
+
+        private void OnSailLevelChanged(int _, int newLevel) => ApplySailVisuals(newLevel);
+
+        private void ApplySailVisuals(int level)
+        {
+            if (sailsFurledVisual != null) sailsFurledVisual.SetActive(level == 0);
+            if (sailsSetVisual != null) sailsSetVisual.SetActive(level > 0);
+        }
+    }
+}

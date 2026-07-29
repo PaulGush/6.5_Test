@@ -25,6 +25,8 @@ namespace Game.Gameplay
             public Which binding = Which.Grab;
             [Tooltip("Action label shown after the binding, e.g. Grab / Drop / Throw.")]
             public string label = "Grab";
+            [Tooltip("Show the channel's free-form context line instead of '[binding] label'.")]
+            public bool useContextLine;
             [Tooltip("Row root GameObject, toggled on/off with visibility.")]
             public GameObject root;
             [Tooltip("Text filled with '[binding]  label'.")]
@@ -59,8 +61,15 @@ namespace Game.Gameplay
 
                 if (show && row.text != null && channel != null)
                 {
-                    string b = row.binding == Which.Grab ? channel.GrabBinding : channel.ThrowBinding;
-                    row.text.text = $"[{b}]  {row.label}";
+                    if (row.useContextLine)
+                    {
+                        row.text.text = channel.ContextLine;
+                    }
+                    else
+                    {
+                        string b = row.binding == Which.Grab ? channel.GrabBinding : channel.ThrowBinding;
+                        row.text.text = $"[{b}]  {row.label}";
+                    }
                 }
             }
         }

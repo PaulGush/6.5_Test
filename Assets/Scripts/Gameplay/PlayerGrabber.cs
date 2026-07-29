@@ -43,12 +43,14 @@ namespace Game.Gameplay
         private Grabbable _held;            // server-only handle for grab/throw logic
         private Collider _carrier;          // this player's own collider, ignored while carrying
         private PlayerInputReader _reader;  // source of the rebindable Interact/Attack actions
+        private Game.Ship.PlayerHelmUser _helmUser; // shares the Interact key; wheel wins over grab
         private readonly Collider[] _overlapBuf = new Collider[16]; // reused by the carry depenetration
 
         private void Awake()
         {
             _carrier = GetComponent<CharacterController>();
             _reader = GetComponent<PlayerInputReader>();
+            _helmUser = GetComponent<Game.Ship.PlayerHelmUser>();
         }
 
         public override void OnStopLocalPlayer()
@@ -61,7 +63,10 @@ namespace Game.Gameplay
             if (!isLocalPlayer) return;
 
             bool gameplay = Cursor.lockState == CursorLockMode.Locked; // not the menu
-            if (gameplay && _reader != null)
+            // The helm shares the Interact key: while steering (or aiming at a free wheel),
+            // the press belongs to PlayerHelmUser, not the grab.
+            bool helmBusy = _helmUser != null && (_helmUser.Engaged || _helmUser.LookingAtHelm);
+            if (gameplay && !helmBusy && _reader != null)
             {
                 if (_reader.Interact != null && _reader.Interact.WasPressedThisFrame()) CmdGrabOrDrop();
                 if (_reader.Throw != null && _reader.Throw.WasPressedThisFrame()) CmdThrow();
@@ -70,7 +75,9 @@ namespace Game.Gameplay
             UpdatePrompt(gameplay);
         }
 
-        /// <summary>Owner-only: work out which prompt to show and push it (with live bindings) to the HUD.</summary>
+        /// <summary>Owner-only: work out which prompt to show and push it (with live bindings) to the
+        /// HUD. Single publisher for the whole channel — grab AND helm states — so the two systems
+        /// can never fight over what's on screen.</summary>
         private void UpdatePrompt(bool gameplay)
         {
             if (promptChannel == null) return;
@@ -81,12 +88,25 @@ namespace Game.Gameplay
                 return;
             }
 
+            string grab = _reader != null ? DisplayBinding(_reader.Interact) : "";
+
+            // Helm outranks grab: it owns the Interact key while engaged or in view.
+            if (_helmUser != null && _helmUser.Engaged)
+            {
+                promptChannel.Set(GrabPromptChannel.State.Steering, grab, "", _helmUser.SteeringContext());
+                return;
+            }
+            if (_helmUser != null && _helmUser.LookingAtHelm)
+            {
+                promptChannel.Set(GrabPromptChannel.State.CanSteer, grab, "");
+                return;
+            }
+
             GrabPromptChannel.State state =
                 _heldSync != null ? GrabPromptChannel.State.Holding :
                 LookingAtGrabbable() ? GrabPromptChannel.State.CanGrab :
                 GrabPromptChannel.State.None;
 
-            string grab = _reader != null ? DisplayBinding(_reader.Interact) : "";
             string throwBind = _reader != null ? DisplayBinding(_reader.Throw) : "";
             promptChannel.Set(state, grab, throwBind);
         }
@@ -121,8 +141,9 @@ namespace Game.Gameplay
             return action.GetBindingDisplayString();
         }
 
-        /// <summary>True if a gamepad was the most recently used device (so we show gamepad glyphs).</summary>
-        private static bool GamepadActive()
+        /// <summary>True if a gamepad was the most recently used device (so we show gamepad glyphs).
+        /// Internal so the helm prompt can word its controls line for the active device too.</summary>
+        internal static bool GamepadActive()
         {
             Gamepad pad = Gamepad.current;
             if (pad == null) return false;

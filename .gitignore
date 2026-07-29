@@ -110,3 +110,6 @@ InitTestScene*.unity*
 /[Aa]ssets/[Ss]creenshots/
 # Local Claude Code MCP config
 /.mcp.json
+
+# JetBrains IDE state
+.idea/

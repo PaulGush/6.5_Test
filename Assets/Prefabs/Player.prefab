@@ -18,6 +18,8 @@ GameObject:
   - component: {fileID: 7995059451265237327}
   - component: {fileID: 5895216637682204413}
   - component: {fileID: 4626928018852155731}
+  - component: {fileID: 5739060311011525065}
+  - component: {fileID: 2865421419331488329}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -152,6 +154,12 @@ MonoBehaviour:
   sprintSpeed: 8
   jumpHeight: 1.4
   gravity: -20
+  airLaunchDamping: 6
+  groundLaunchDamping: 40
+  crouchHeight: 1
+  crouchSpeed: 2.5
+  crouchLerpSpeed: 8
+  crouchCameraDrop: 0.6
   lookSensitivity: 0.12
   minPitch: -80
   maxPitch: 80
@@ -249,11 +257,45 @@ MonoBehaviour:
   aimSource: {fileID: 7588974377487649533}
   grabRadius: 1.5
   throwForce: 12
-  followMaxSpeed: 20
-  followMaxAngularSpeed: 720
+  carrySkin: 0.02
   promptChannel: {fileID: 11400000, guid: c43d1169024e63cf1b7e7c23ccf12209, type: 2}
   interactRange: 3.5
   lookRadius: 0.3
+--- !u!114 &5739060311011525065
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 46bb40afe2dee4038b37363aec3fcde4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Ship.ShipRider
+  syncMethod: 0
+  syncDirection: 0
+  syncMode: 0
+  syncInterval: 0
+--- !u!114 &2865421419331488329
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f23e3d37b7e8855bdb5284e0c7a248c9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Ship.PlayerHelmUser
+  syncMethod: 0
+  syncDirection: 0
+  syncMode: 0
+  syncInterval: 0
+  aimSource: {fileID: 7588974377487649533}
+  interactRange: 3.5
+  lookRadius: 0.35
 --- !u!1 &6925205485701196812
 GameObject:
   m_ObjectHideFlags: 0

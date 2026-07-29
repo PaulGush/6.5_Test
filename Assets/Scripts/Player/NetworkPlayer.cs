@@ -50,6 +50,8 @@ namespace Game.Player
         private PlayerInputReader _input;
         private NetworkTransformBase _netTransform;
         private NameplateView _nameplate;
+        private Game.Ship.ShipRider _rider;         // optional: aboard-ship parenting
+        private Game.Ship.PlayerHelmUser _helmUser; // optional: steering-station input routing
 
         // Server-only: the pose to respawn this player at (last checkpoint, or initial spawn).
         private Vector3 _spawnPos;
@@ -64,6 +66,8 @@ namespace Game.Player
             _controller = GetComponent<PlayerController>();
             _input = GetComponent<PlayerInputReader>();
             _netTransform = GetComponent<NetworkTransformBase>();
+            _rider = GetComponent<Game.Ship.ShipRider>();
+            _helmUser = GetComponent<Game.Ship.PlayerHelmUser>();
             // Instantiate this player's floating name label from the prefab.
             if (nameplatePrefab != null)
                 _nameplate = Instantiate(nameplatePrefab, transform);
@@ -173,6 +177,8 @@ namespace Game.Player
 
             PlayerInputState s = _input.Sample();
             if (DebugAutoWalk) s.Move = new Vector2(0f, 1f); // forward, for replication testing
+            // At a ship's helm, Move becomes rudder/sail commands and is stripped from the state.
+            if (_helmUser != null) _helmUser.HandleInput(ref s);
             CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
         }
 
@@ -180,6 +186,9 @@ namespace Game.Player
         [Server]
         private void ServerRespawn()
         {
+            // A respawn always puts the player ashore first (unparents + releases any helm),
+            // otherwise the teleport pose would be interpreted in the ship's local space.
+            if (_rider != null) _rider.ServerBoard(null);
             _controller.Respawn(_spawnPos, _spawnRot);
             // Force a teleport (not an interpolated slide) on every client.
             if (_netTransform != null)
@@ -192,6 +201,14 @@ namespace Game.Player
         {
             // Never trust client-supplied dt blindly; clamp to avoid teleport exploits/hitches.
             dt = Mathf.Clamp(dt, 0f, 0.1f);
+
+            // Server-side enforcement of the wheel lock (the owner already strips these).
+            if (_helmUser != null && _helmUser.Engaged)
+            {
+                move = Vector2.zero;
+                jumpPressed = false;
+                sprint = false;
+            }
 
             var input = new PlayerInputState
             {
