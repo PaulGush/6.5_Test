@@ -17,7 +17,7 @@ namespace Game.Gameplay
     public class GrabPromptChannel : ScriptableObject
     {
         // Only append here: the values are serialized in the HUD prefab's row config.
-        public enum State { None, CanGrab, Holding, CanSteer, Steering }
+        public enum State { None, CanGrab, Holding, CanSteer, Steering, CanUseStation }
 
         public event Action Changed;
 

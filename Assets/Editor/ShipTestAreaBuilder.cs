@@ -44,6 +44,9 @@ namespace Game.EditorTools
         // and re-moored by the auto-maintenance pass.
         private const int BuildVersion = 4;
 
+        private const string PlayerLayerName = "PlayerBody";
+        private const string ShipHullLayerName = "ShipHull";
+
         private const float DockTopY = 0.9f;    // walkable dock height; every ship's deck aligns to it
         private const float DockEdgeX = 2f;     // dock is 4 wide, centred on x=0
         private const float WaterEdgeZ = -10f;  // water surface starts here and runs to -150
@@ -57,8 +60,9 @@ namespace Game.EditorTools
             public string hullPath;     // dressed Synty variant (attachments include wheel/cannons)
             public float mass;
             public float rudderTurnAccel;
-            public float[] sailThrust;
-            public bool crowsNest;      // probe masts for nest platforms + build jump pads up
+            public float maxSailThrust; // acceleration with every mast unfurled; per-count thrust
+                                        // is generated linearly from the mast count
+            public bool crowsNest;      // probe masts for nest platforms + climbable rigging
             public float draftFraction; // how deep the hull sits: waterline as a fraction of
                                         // hull-bottom → main-deck (lower = rides higher)
         }
@@ -69,7 +73,7 @@ namespace Game.EditorTools
             hullPath = MediumAttachmentsPath,
             mass = 3000f,
             rudderTurnAccel = 14f,
-            sailThrust = new[] { 0f, 1.2f, 2.4f, 3.6f },
+            maxSailThrust = 3.6f,
             crowsNest = false,
             draftFraction = 0.45f,
         };
@@ -80,7 +84,7 @@ namespace Game.EditorTools
             hullPath = SyntyRoot + "/Vehicles/SM_Veh_Boat_Warship_01_Hull_Attachments.prefab",
             mass = 8000f,
             rudderTurnAccel = 9f,       // heavier ship, wider turns — the chaos scales up
-            sailThrust = new[] { 0f, 1.4f, 2.8f, 4.2f },
+            maxSailThrust = 4.2f,
             crowsNest = true,
             // Ride high: the gun ports sit low on the hull and must stay clear of the water.
             draftFraction = 0.26f,
@@ -92,7 +96,7 @@ namespace Game.EditorTools
             hullPath = SyntyRoot + "/Vehicles/SM_Veh_Veh_Boat_Large_01_Hull_Attachments.prefab",
             mass = 5500f,
             rudderTurnAccel = 11f,
-            sailThrust = new[] { 0f, 1.3f, 2.6f, 3.9f },
+            maxSailThrust = 3.9f,
             crowsNest = true,
             draftFraction = 0.32f,
         };
@@ -147,6 +151,9 @@ namespace Game.EditorTools
                 EnsureCurrentBuildOnce();
                 EnsureRiggingClimbOnce();
                 EnsureNoNestJumpPadsOnce();
+                EnsureSailStationsOnce();
+                AddStationPromptRow(logIfPresent: false);
+                EnsurePlayerPhysicsIsolation();
             };
         }
 
@@ -342,7 +349,8 @@ namespace Game.EditorTools
                 nt.coordinateSpace = CoordinateSpace.World;
 
                 var ship = root.AddComponent<ShipController>();
-                WireShipTuning(ship, spec, hull);
+                WireShipTuning(root, ship, spec, hull, masts,
+                    pos => rows.OrderBy(r => Mathf.Abs(r.z - pos.z)).First().y);
                 foreach (ShipDeck deck in root.GetComponentsInChildren<ShipDeck>(true))
                     deck.SetShip(ship);
 
@@ -360,6 +368,8 @@ namespace Game.EditorTools
                 // rigging meshes (restored after the main probe session, which hid them).
                 if (nests.Count > 0)
                     BuildRiggingClimbVolumes(root, ProbeRiggingClimbs(root, nests));
+
+                IsolatePlayerColliders(root);
 
                 // Inert marker read by the maintenance pass to detect stale prefabs.
                 new GameObject($"BuildTag_v{BuildVersion}").transform.SetParent(root.transform, false);
@@ -709,28 +719,294 @@ namespace Game.EditorTools
             box.size = new Vector3(0.35f, 0.3f, Vector3.Distance(a, b) + 0.3f);
         }
 
-        // Applies the spec's handling numbers and wires the sail visuals (by naming convention:
-        // "SailUp"/"Sails_Up" children are the furled set, other "Sails" children are the set set).
-        private static void WireShipTuning(ShipController ship, ShipSpec spec, GameObject hull)
+        private static void WireShipTuning(GameObject root, ShipController ship, ShipSpec spec,
+            GameObject hull, List<MastColumn> masts, System.Func<Vector3, float> deckYAt)
         {
-            var furled = new List<GameObject>();
-            var set = new List<GameObject>();
+            var so = new SerializedObject(ship);
+            so.FindProperty("rudderTurnAccel").floatValue = spec.rudderTurnAccel;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            CreateSailStations(root, ship, spec, hull, masts, deckYAt);
+        }
+
+        /// <summary>
+        /// One ShipSailStation per mast that owns sails. Sail visuals (by naming convention:
+        /// "SailUp"/"Sails_Up" = furled, other "Sails" = set) are assigned to their nearest mast
+        /// along the ship's length, each mast gets an interaction collider at its base marked
+        /// with a ShipSailTarget, and the controller's thrust table is generated linearly from
+        /// the mast count (speed = number of unfurled masts). Shared by fresh builds and the
+        /// in-place patch of existing prefabs.
+        /// </summary>
+        private static void CreateSailStations(GameObject root, ShipController ship, ShipSpec spec,
+            GameObject hull, List<MastColumn> masts, System.Func<Vector3, float> deckYAt)
+        {
+            Vector3 rootPos = root.transform.position;
+
+            // Every sail visual, tagged furled/set, keyed by its position along the ship.
+            var visuals = new List<(GameObject go, float z, bool furled)>();
             foreach (Transform t in hull.GetComponentsInChildren<Transform>(true))
             {
-                if (t.GetComponent<Renderer>() == null) continue;
+                var renderer = t.GetComponent<Renderer>();
+                if (renderer == null) continue;
                 string n = t.name;
                 bool isFurled = n.Contains("SailUp") || n.Contains("Sails_Up");
                 bool isSet = !isFurled && n.Contains("Sails") && !n.Contains("Rigging");
-                if (isFurled) { furled.Add(t.gameObject); t.gameObject.SetActive(true); }
-                else if (isSet) { set.Add(t.gameObject); t.gameObject.SetActive(false); } // start furled
+                if (isFurled || isSet)
+                    visuals.Add((t.gameObject, renderer.bounds.center.z - rootPos.z, isFurled));
             }
 
-            var so = new SerializedObject(ship);
-            so.FindProperty("rudderTurnAccel").floatValue = spec.rudderTurnAccel;
-            SetFloatArray(so.FindProperty("sailThrust"), spec.sailThrust);
-            SetObjectArray(so.FindProperty("sailsFurledVisuals"), furled);
-            SetObjectArray(so.FindProperty("sailsSetVisuals"), set);
-            so.ApplyModifiedPropertiesWithoutUndo();
+            var stations = new List<ShipSailStation>();
+            foreach (MastColumn m in masts)
+            {
+                MastColumn mast = m;
+                var mine = visuals.Where(v =>
+                    masts.OrderBy(o => Mathf.Abs(v.z - o.pos.z)).First().pos == mast.pos).ToList();
+                if (mine.Count == 0) continue; // mast with no canvas — not a station
+
+                var station = root.AddComponent<ShipSailStation>();
+                var so = new SerializedObject(station);
+                SerializedProperty furledProp = so.FindProperty("furledVisuals");
+                SerializedProperty setProp = so.FindProperty("setVisuals");
+                var furled = mine.Where(v => v.furled).Select(v => v.go).ToList();
+                var set = mine.Where(v => !v.furled).Select(v => v.go).ToList();
+                furledProp.arraySize = furled.Count;
+                for (int i = 0; i < furled.Count; i++)
+                    furledProp.GetArrayElementAtIndex(i).objectReferenceValue = furled[i];
+                setProp.arraySize = set.Count;
+                for (int i = 0; i < set.Count; i++)
+                    setProp.GetArrayElementAtIndex(i).objectReferenceValue = set[i];
+                so.ApplyModifiedPropertiesWithoutUndo();
+
+                foreach (GameObject go in furled) go.SetActive(true);  // ships start all-furled
+                foreach (GameObject go in set) go.SetActive(false);
+
+                // Interaction collider at the mast base (a collar around the pole).
+                var marker = new GameObject("SailStationTarget");
+                marker.transform.SetParent(root.transform, false);
+                marker.transform.localPosition = new Vector3(m.pos.x, deckYAt(m.pos) + 1.1f, m.pos.z);
+                var box = marker.AddComponent<BoxCollider>();
+                box.size = new Vector3(0.7f, 1.4f, 0.7f);
+                marker.AddComponent<ShipSailTarget>().SetStation(station);
+
+                stations.Add(station);
+            }
+
+            // Controller wiring: stations + a linear thrust table for 0..N masts unfurled.
+            var soShip = new SerializedObject(ship);
+            SerializedProperty stationsProp = soShip.FindProperty("sailStations");
+            stationsProp.arraySize = stations.Count;
+            for (int i = 0; i < stations.Count; i++)
+                stationsProp.GetArrayElementAtIndex(i).objectReferenceValue = stations[i];
+            var thrust = new float[stations.Count + 1];
+            for (int i = 1; i < thrust.Length; i++)
+                thrust[i] = spec.maxSailThrust * i / Mathf.Max(1, stations.Count);
+            SetFloatArray(soShip.FindProperty("sailThrust"), thrust);
+            soShip.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// In-place migration: adds per-mast sail stations to an existing ship prefab (which
+        /// predates them) WITHOUT rebuilding it, so hand-adjusted colliders survive. Mast
+        /// positions come from the meshes; marker heights from the existing Deck strip boxes.
+        /// </summary>
+        [MenuItem("Tools/Ship/Add Sail Stations To Moored Ship")]
+        public static void AddSailStationsMenu()
+        {
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
+                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabSailStations(spec);
+        }
+
+        private static void PatchPrefabSailStations(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null || asset.GetComponent<ShipSailStation>() != null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var ship = contents.GetComponent<ShipController>();
+                GameObject hull = null;
+                foreach (Transform child in contents.transform)
+                    if (child.name.Contains("Hull")) { hull = child.gameObject; break; }
+                if (ship == null || hull == null)
+                {
+                    Debug.LogWarning($"[ShipTestAreaBuilder] {path}: no ShipController/hull found; sail stations not added.");
+                    return;
+                }
+
+                List<MastColumn> masts = CollectMasts(contents, hull);
+                var deckBoxes = contents.GetComponentsInChildren<BoxCollider>(true)
+                    .Where(b => b.name == "Deck").ToList();
+                float DeckYAt(Vector3 pos) => deckBoxes.Count > 0
+                    ? deckBoxes.OrderBy(b => Mathf.Abs(b.center.z - pos.z))
+                        .Select(b => b.center.y + b.size.y * 0.5f).First()
+                    : pos.y;
+
+                CreateSailStations(contents, ship, spec, hull, masts, DeckYAt);
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: added {contents.GetComponents<ShipSailStation>().Length} " +
+                          "sail station(s). Hand-adjusted colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        /// <summary>
+        /// Makes players physically unable to shove the ship. Every player-facing solid collider
+        /// moves onto a kinematic child Rigidbody (kinematic bodies ignore incoming contacts),
+        /// leaving only the "Hull" world-collision box on the dynamic root — and that box goes on
+        /// the ShipHull layer, which the runtime ignores against PlayerBody. Works on freshly
+        /// built roots and as an in-place patch of existing prefabs.
+        /// </summary>
+        private static int IsolatePlayerColliders(GameObject root)
+        {
+            // The world-collision hull box must STAY on the dynamic root: pull it out of the
+            // Colliders group before that group goes kinematic (a kinematic hull would sail
+            // straight through rocks).
+            Transform group = FindDeep(root.transform, "Colliders");
+            Transform hullBox = group != null ? group.Find("Hull") : null;
+            if (hullBox != null) hullBox.SetParent(root.transform, true);
+
+            int hullLayer = LayerMask.NameToLayer(ShipHullLayerName);
+            foreach (Collider c in root.GetComponentsInChildren<Collider>(true))
+                if (c.name == "Hull" && !c.isTrigger && hullLayer >= 0)
+                    c.gameObject.layer = hullLayer;
+
+            int added = 0;
+            // Group nodes cover whole subtrees (generated colliders; the Synty deck props).
+            foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name != "Colliders" && t.name != "Attachments") continue;
+                if (t.GetComponent<Rigidbody>() != null) continue;
+                MakeKinematic(t.gameObject);
+                added++;
+            }
+            // Stragglers still attached to the root body (station markers, fallback wheel...).
+            foreach (Collider c in root.GetComponentsInChildren<Collider>(true))
+            {
+                if (c.isTrigger || !c.enabled || c.gameObject == root || c.name == "Hull") continue;
+                if (HasOwnRigidbody(c.transform, root.transform)) continue;
+                MakeKinematic(c.gameObject);
+                added++;
+            }
+            return added;
+        }
+
+        private static void MakeKinematic(GameObject go)
+        {
+            var rb = go.AddComponent<Rigidbody>();
+            rb.isKinematic = true;
+            rb.useGravity = false;
+        }
+
+        private static bool HasOwnRigidbody(Transform t, Transform root)
+        {
+            for (Transform p = t; p != null && p != root; p = p.parent)
+                if (p.GetComponent<Rigidbody>() != null) return true;
+            return false;
+        }
+
+        private static int EnsureLayer(string name)
+        {
+            int existing = LayerMask.NameToLayer(name);
+            if (existing >= 0) return existing;
+
+            var assets = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/TagManager.asset");
+            if (assets.Length == 0) return -1;
+            var tagManager = new SerializedObject(assets[0]);
+            SerializedProperty layers = tagManager.FindProperty("layers");
+            for (int i = 8; i < 32; i++)
+            {
+                SerializedProperty slot = layers.GetArrayElementAtIndex(i);
+                if (string.IsNullOrEmpty(slot.stringValue))
+                {
+                    slot.stringValue = name;
+                    tagManager.ApplyModifiedProperties();
+                    Debug.Log($"[ShipTestAreaBuilder] Created layer '{name}' (slot {i}).");
+                    return i;
+                }
+            }
+            Debug.LogWarning($"[ShipTestAreaBuilder] No free layer slot for '{name}'.");
+            return -1;
+        }
+
+        /// <summary>In-place: kinematic-isolate the moored ship's prefab and put the player on
+        /// its own layer, so player physics can't move the ship at all.</summary>
+        [MenuItem("Tools/Ship/Isolate Player Physics From Ship")]
+        public static void IsolatePlayerPhysicsMenu() => EnsurePlayerPhysicsIsolation(force: true);
+
+        private static void EnsurePlayerPhysicsIsolation(bool force = false)
+        {
+            if (!force && SceneManager.GetActiveScene().path != ScenePath) return;
+
+            int playerLayer = EnsureLayer(PlayerLayerName);
+            EnsureLayer(ShipHullLayerName);
+
+            // Player prefab onto its own layer (the runtime ignores PlayerBody vs ShipHull).
+            if (playerLayer >= 0)
+            {
+                var playerAsset = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+                if (playerAsset != null && playerAsset.layer != playerLayer)
+                {
+                    GameObject player = PrefabUtility.LoadPrefabContents(PlayerPrefabPath);
+                    try
+                    {
+                        player.layer = playerLayer;
+                        PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
+                        Debug.Log($"[ShipTestAreaBuilder] Player.prefab moved to layer '{PlayerLayerName}'.");
+                    }
+                    finally
+                    {
+                        PrefabUtility.UnloadPrefabContents(player);
+                    }
+                }
+            }
+
+            // Moored ship's prefab: colliders onto kinematic children (in place, preserving
+            // hand-adjusted colliders).
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            if (current == null) return;
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null) return;
+            Transform assetGroup = FindDeep(asset.transform, "Colliders");
+            if (assetGroup != null && assetGroup.GetComponent<Rigidbody>() != null) return; // done
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                int added = IsolatePlayerColliders(contents);
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: player physics isolated " +
+                          $"({added} kinematic bodies added; hull box on '{ShipHullLayerName}'). " +
+                          "Hand-adjusted colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Maintenance: give the moored ship's prefab sail stations once.
+        private static void EnsureSailStationsOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            var current = harbor.GetComponentInChildren<ShipController>(true);
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabSailStations(spec);
         }
 
         // The dressed Synty variants include a ship's wheel child; use it in place. Fallback for
@@ -1325,6 +1601,54 @@ namespace Game.EditorTools
 
                 PrefabUtility.SaveAsPrefabAsset(hud, HudPrefabPath);
                 Debug.Log("[ShipTestAreaBuilder] GrabPromptHUD.prefab: added helm prompt rows (take/steer/let go).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(hud);
+            }
+        }
+
+        /// <summary>Adds the CanUseStation context row to the HUD (shows "[E] Unfurl/Furl sails"
+        /// at a mast). Cloned from the grab row; idempotent.</summary>
+        [MenuItem("Tools/Ship/Add Station Prompt Row To HUD")]
+        public static void AddStationPromptRowMenu() => AddStationPromptRow(logIfPresent: true);
+
+        private static void AddStationPromptRow(bool logIfPresent)
+        {
+            if (!File.Exists(HudPrefabPath)) return;
+
+            GameObject hud = PrefabUtility.LoadPrefabContents(HudPrefabPath);
+            try
+            {
+                var view = hud.GetComponentInChildren<GrabPromptView>(true);
+                if (view == null) return;
+
+                var so = new SerializedObject(view);
+                SerializedProperty rows = so.FindProperty("rows");
+
+                GameObject grabTemplate = null;
+                for (int i = 0; i < rows.arraySize; i++)
+                {
+                    SerializedProperty row = rows.GetArrayElementAtIndex(i);
+                    int visibleIn = row.FindPropertyRelative("visibleIn").enumValueIndex;
+                    if (visibleIn == (int)GrabPromptChannel.State.CanUseStation)
+                    {
+                        if (logIfPresent) Debug.Log("[ShipTestAreaBuilder] Station prompt row already present.");
+                        return;
+                    }
+                    if (visibleIn == (int)GrabPromptChannel.State.CanGrab)
+                        grabTemplate = row.FindPropertyRelative("root").objectReferenceValue as GameObject;
+                }
+                if (grabTemplate == null) return;
+
+                GameObject stationRow = CloneRow(grabTemplate, "StationRow");
+                var text = stationRow.GetComponent<UnityEngine.UI.Text>();
+                if (text != null) text.horizontalOverflow = HorizontalWrapMode.Overflow;
+                AppendRow(rows, GrabPromptChannel.State.CanUseStation, 0, "", stationRow, true);
+                so.ApplyModifiedPropertiesWithoutUndo();
+
+                PrefabUtility.SaveAsPrefabAsset(hud, HudPrefabPath);
+                Debug.Log("[ShipTestAreaBuilder] GrabPromptHUD.prefab: added the station prompt row.");
             }
             finally
             {

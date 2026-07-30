@@ -5,14 +5,16 @@ using Game.Player;
 namespace Game.Ship
 {
     /// <summary>
-    /// Player-side use of a ship's helm. The owner looks at the wheel and presses Interact to
-    /// take it; while engaged their Move input steers the ship instead of their legs (A/D =
-    /// rudder, W/S = set/furl one sail level), look stays free, and Interact again lets go.
+    /// Player-side use of the ship's crew stations. The helm: look at the wheel, press Interact
+    /// to take it; while engaged, A/D steers the rudder, look stays free, Interact lets go.
+    /// Sail stations: look at a mast's station marker and press Interact to furl/unfurl that
+    /// mast — ship speed is how many masts fly canvas, so sail trim is a separate job from
+    /// steering.
     ///
     /// Movement suppression happens in <see cref="NetworkPlayer"/> (which calls
     /// <see cref="HandleInput"/> before sending its move command) and is re-checked server-side.
     /// <see cref="Game.Gameplay.PlayerGrabber"/> also consults us so the shared Interact key
-    /// doesn't grab a prop and take the wheel in the same press.
+    /// doesn't grab a prop and work a station in the same press.
     /// </summary>
     public class PlayerHelmUser : NetworkBehaviour
     {
@@ -30,11 +32,14 @@ namespace Game.Ship
         public bool Engaged => _helm != null;
         /// <summary>Owner-only: a free helm is under the crosshair right now.</summary>
         public bool LookingAtHelm { get; private set; }
+        /// <summary>Owner-only: a mast's sail station is under the crosshair right now.</summary>
+        public bool LookingAtSail => _sailInView != null;
 
         private PlayerInputReader _reader;
         private ShipRider _rider;
+        private ShipHelm _helmInView;       // owner-only, refreshed each frame
+        private ShipSailTarget _sailInView; // owner-only, refreshed each frame
         private float _sentRudder;
-        private float _prevSailAxis;
 
         /// <summary>Editor-tooling hook for wiring at build time.</summary>
         public void SetAimSource(Transform value) => aimSource = value;
@@ -50,46 +55,35 @@ namespace Game.Ship
             if (!isLocalPlayer) return;
 
             bool gameplay = Cursor.lockState == CursorLockMode.Locked;
-            LookingAtHelm = gameplay && !Engaged && FindHelmInView() != null;
+            _helmInView = null;
+            _sailInView = null;
+            if (gameplay && !Engaged) FindStationInView();
+            LookingAtHelm = _helmInView != null;
 
             if (gameplay && _reader != null && _reader.Interact != null
                 && _reader.Interact.WasPressedThisFrame())
             {
                 if (Engaged) CmdLeaveHelm();
-                else if (LookingAtHelm)
-                {
-                    ShipHelm helm = FindHelmInView();
-                    if (helm != null) CmdEngageHelm(helm);
-                }
+                else if (_helmInView != null) CmdEngageHelm(_helmInView);
+                else if (_sailInView != null) CmdToggleSail(_sailInView.Station);
             }
         }
 
         /// <summary>
         /// Owner-side, called by NetworkPlayer with the frame's sampled input before it is sent.
-        /// While engaged: converts Move into helm commands and strips it (plus jump/sprint) from
-        /// the state so the body stays planted at the wheel. Returns true if input was consumed.
+        /// While engaged: converts Move.x into rudder commands and strips movement (plus
+        /// jump/sprint) from the state so the body stays planted at the wheel. Returns true if
+        /// input was consumed. Sails are NOT set here — that's the mast stations' job.
         /// </summary>
         public bool HandleInput(ref PlayerInputState input)
         {
-            if (!Engaged)
-            {
-                _prevSailAxis = 0f;
-                return false;
-            }
+            if (!Engaged) return false;
 
             float rudder = Mathf.Clamp(input.Move.x, -1f, 1f);
-
-            // W/S edge-triggered: one sail level per press, so holding W doesn't zip to full sail.
-            float sailAxis = input.Move.y;
-            int sailDelta = 0;
-            if (_prevSailAxis < 0.5f && sailAxis >= 0.5f) sailDelta = 1;
-            else if (_prevSailAxis > -0.5f && sailAxis <= -0.5f) sailDelta = -1;
-            _prevSailAxis = sailAxis;
-
-            if (sailDelta != 0 || Mathf.Abs(rudder - _sentRudder) > 0.01f)
+            if (Mathf.Abs(rudder - _sentRudder) > 0.01f)
             {
                 _sentRudder = rudder;
-                CmdControl(rudder, sailDelta);
+                CmdSteer(rudder);
             }
 
             input.Move = Vector2.zero;
@@ -99,30 +93,43 @@ namespace Game.Ship
         }
 
         /// <summary>
-        /// Owner-side: the controls line the HUD shows while steering, including live sail level
+        /// Owner-side: the controls line the HUD shows while steering, including live sail count
         /// (worded for the active device). Sail state is synced, so this stays correct even though
-        /// the ship is simulated on the server.
+        /// the sails are trimmed by other players at the masts.
         /// </summary>
         public string SteeringContext()
         {
             if (_helm == null || _helm.Ship == null) return "";
             string controls = Game.Gameplay.PlayerGrabber.GamepadActive()
-                ? "[Stick ←→]  Steer    [Stick ↑↓]  Sails"
-                : "[A/D]  Steer    [W/S]  Sails";
-            return $"{controls} {_helm.Ship.SailLevel}/{_helm.Ship.MaxSailLevel}";
+                ? "[Stick ←→]  Steer"
+                : "[A/D]  Steer";
+            return $"{controls}    Sails {_helm.Ship.SailLevel}/{_helm.Ship.MaxSailLevel}";
         }
 
-        private ShipHelm FindHelmInView()
+        /// <summary>Owner-side: prompt text when looking at a mast's sail station.</summary>
+        public string SailPromptText() =>
+            _sailInView != null && _sailInView.Station != null
+                ? (_sailInView.Station.Unfurled ? "Furl sails" : "Unfurl sails")
+                : "";
+
+        // One look-ray serves both station types; at most one can be under the crosshair.
+        private void FindStationInView()
         {
             Transform eye = aimSource != null ? aimSource : transform;
-            if (Physics.SphereCast(eye.position, lookRadius, eye.forward, out RaycastHit hit,
+            if (!Physics.SphereCast(eye.position, lookRadius, eye.forward, out RaycastHit hit,
                     interactRange, ~0, QueryTriggerInteraction.Ignore))
+                return;
+
+            var helmTarget = hit.collider.GetComponent<ShipHelmTarget>();
+            if (helmTarget != null && helmTarget.Helm != null && !helmTarget.Helm.Occupied)
             {
-                var target = hit.collider.GetComponent<ShipHelmTarget>();
-                if (target != null && target.Helm != null && !target.Helm.Occupied)
-                    return target.Helm;
+                _helmInView = helmTarget.Helm;
+                return;
             }
-            return null;
+
+            var sailTarget = hit.collider.GetComponent<ShipSailTarget>();
+            if (sailTarget != null && sailTarget.Station != null)
+                _sailInView = sailTarget;
         }
 
         [Command]
@@ -149,11 +156,19 @@ namespace Game.Ship
         }
 
         [Command]
-        private void CmdControl(float rudder, int sailDelta)
+        private void CmdSteer(float rudder)
         {
             if (_helm == null || _helm.Ship == null) return;
             _helm.Ship.SetRudder(rudder);
-            if (sailDelta != 0) _helm.Ship.ChangeSail(sailDelta);
+        }
+
+        [Command]
+        private void CmdToggleSail(ShipSailStation station)
+        {
+            if (station == null || _rider == null) return;
+            // Must be aboard the ship this mast belongs to (the station sits on the ship root).
+            if (station.GetComponent<ShipController>() != _rider.CurrentShip) return;
+            station.Toggle();
         }
     }
 }
