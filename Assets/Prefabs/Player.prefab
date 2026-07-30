@@ -20,7 +20,7 @@ GameObject:
   - component: {fileID: 4626928018852155731}
   - component: {fileID: 5739060311011525065}
   - component: {fileID: 2865421419331488329}
-  m_Layer: 0
+  m_Layer: 8
   m_Name: Player
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -160,6 +160,8 @@ MonoBehaviour:
   crouchSpeed: 2.5
   crouchLerpSpeed: 8
   crouchCameraDrop: 0.6
+  climbSpeed: 3
+  climbMoveFactor: 0.4
   lookSensitivity: 0.12
   minPitch: -80
   maxPitch: 80
