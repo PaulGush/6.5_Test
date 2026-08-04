@@ -179,7 +179,15 @@ namespace Game.Player
             if (DebugAutoWalk) s.Move = new Vector2(0f, 1f); // forward, for replication testing
             // At a ship's helm, Move becomes rudder/sail commands and is stripped from the state.
             if (_helmUser != null) _helmUser.HandleInput(ref s);
-            CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
+
+            if (isServer)
+                // Host: we ARE the server, so tick directly instead of round-tripping through
+                // the local connection. Mirror drains that queue after LateUpdate, which would
+                // move us AFTER the camera has already updated each frame — the camera rides
+                // one stale frame behind the model, which reads as judder in third person.
+                ServerMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
+            else
+                CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
         }
 
         /// <summary>Server-authoritative respawn: reset the simulation pose and snap clients.</summary>
@@ -198,6 +206,12 @@ namespace Game.Player
         // Owner -> server. Server is authoritative over the simulation.
         [Command]
         private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, float dt)
+            => ServerMove(move, look, sprint, jumpPressed, crouch, dt);
+
+        // Shared server-side movement step: remote owners arrive here via CmdMove, the
+        // host's own player calls it synchronously from Update (see there for why).
+        [Server]
+        private void ServerMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, float dt)
         {
             // Never trust client-supplied dt blindly; clamp to avoid teleport exploits/hitches.
             dt = Mathf.Clamp(dt, 0f, 0.1f);

@@ -61,6 +61,14 @@ namespace Game.Player
         private float _standHeight, _bottomOffset, _standCamY, _crouchT;
         private Vector3 _standCenter;
 
+        // Visual state read by PlayerAvatar. Only meaningful where Tick runs (the server).
+        /// <summary>Current 0..1 crouch blend.</summary>
+        public float CrouchBlend => _crouchT;
+        /// <summary>True while the last Tick was in ladder-climb mode.</summary>
+        public bool IsClimbing { get; private set; }
+        /// <summary>CharacterController grounded state from the last Move.</summary>
+        public bool IsGrounded => _cc != null && _cc.isGrounded;
+
         private void Awake()
         {
             _cc = GetComponent<CharacterController>();
@@ -166,7 +174,8 @@ namespace Game.Player
             // Climb mode: inside a Ladder volume, forward/back input becomes vertical motion and
             // gravity is off. Horizontal input still works (damped) so the player can press into
             // the rungs and, at the top, push over onto the platform. Jump hops off.
-            if (OnLadder())
+            IsClimbing = OnLadder();
+            if (IsClimbing)
             {
                 wish *= climbMoveFactor;
                 _verticalVelocity = input.Move.y * climbSpeed;

@@ -815,7 +815,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 456174, guid: 5bc229dfc40d9ae47be77c071dfa4e08, type: 3}
       propertyPath: m_LocalPosition.y
-      value: -2.365384
+      value: -4.57
       objectReference: {fileID: 0}
     - target: {fileID: 456174, guid: 5bc229dfc40d9ae47be77c071dfa4e08, type: 3}
       propertyPath: m_LocalPosition.z
@@ -1260,7 +1260,7 @@ MonoBehaviour:
   IgnoreTimeScale: 0
   WorldUpOverride: {fileID: 0}
   ChannelMask: -1
-  UpdateMethod: 2
+  UpdateMethod: 1
   BlendUpdateMethod: 1
   LensModeOverride:
     Enabled: 0
@@ -6352,7 +6352,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 418364, guid: d2402c37ee91cab4498a66672680e0c0, type: 3}
       propertyPath: m_LocalPosition.y
-      value: -2.365384
+      value: -4.39
       objectReference: {fileID: 0}
     - target: {fileID: 418364, guid: d2402c37ee91cab4498a66672680e0c0, type: 3}
       propertyPath: m_LocalPosition.z
@@ -7238,7 +7238,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 416180, guid: b2422d159a2884643ba9d94d7a1c57de, type: 3}
       propertyPath: m_LocalPosition.y
-      value: -2.765384
+      value: -4.9
       objectReference: {fileID: 0}
     - target: {fileID: 416180, guid: b2422d159a2884643ba9d94d7a1c57de, type: 3}
       propertyPath: m_LocalPosition.z
@@ -7300,7 +7300,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 426668, guid: 2d3f20e70723c1c44bd53c786fdc7b7b, type: 3}
       propertyPath: m_LocalPosition.y
-      value: -2.365384
+      value: -4.37
       objectReference: {fileID: 0}
     - target: {fileID: 426668, guid: 2d3f20e70723c1c44bd53c786fdc7b7b, type: 3}
       propertyPath: m_LocalPosition.z

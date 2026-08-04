@@ -2,8 +2,6 @@
 using UnityEngine;
 using UnityEditor;
 
-// Fully qualified: Mirror's PostInstallScript declares a top-level `Editor` NAMESPACE,
-// which otherwise shadows the UnityEditor.Editor base type here and breaks compilation.
 [CustomEditor(typeof(SyntyPackageHelperConfig))]
 public class ExamplePackConfigLoaderEditor : UnityEditor.Editor
 {

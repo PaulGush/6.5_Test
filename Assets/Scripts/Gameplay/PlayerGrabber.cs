@@ -40,6 +40,9 @@ namespace Game.Gameplay
         // Drop/Throw prompts even on a remote client and (b) every client carries it locally in LateUpdate.
         [SyncVar] private Grabbable _heldSync;
 
+        /// <summary>True on every client while this player carries a prop (drives the carry animation).</summary>
+        public bool IsHolding => _heldSync != null;
+
         private Grabbable _held;            // server-only handle for grab/throw logic
         private Collider _carrier;          // this player's own collider, ignored while carrying
         private PlayerInputReader _reader;  // source of the rebindable Interact/Attack actions

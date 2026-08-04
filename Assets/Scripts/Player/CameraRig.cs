@@ -28,6 +28,13 @@ namespace Game.Player
         private const int ActivePriority = 20;
         private const int InactivePriority = 10;
 
+        /// <summary>Current view mode of this client's rig. Static because there is exactly one
+        /// local view per client; consumed by <see cref="PlayerAvatar"/> to hide the local model.</summary>
+        public static bool IsFirstPerson { get; private set; } = true;
+
+        /// <summary>Raised when the local view toggles between first and third person.</summary>
+        public static event System.Action<bool> FirstPersonChanged;
+
         private InputAction _toggle;
         private bool _isFirstPerson;
 
@@ -69,6 +76,8 @@ namespace Game.Player
             _isFirstPerson = firstPersonMode;
             if (firstPerson != null) firstPerson.Priority = firstPersonMode ? ActivePriority : InactivePriority;
             if (thirdPerson != null) thirdPerson.Priority = firstPersonMode ? InactivePriority : ActivePriority;
+            IsFirstPerson = firstPersonMode;
+            FirstPersonChanged?.Invoke(firstPersonMode);
         }
     }
 }
