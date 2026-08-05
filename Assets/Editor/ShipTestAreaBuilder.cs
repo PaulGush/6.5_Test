@@ -36,9 +36,11 @@ namespace Game.EditorTools
         private const string SyntyRoot = "Assets/Synty/PolygonPirates/Prefabs";
         private const string MediumAttachmentsPath = SyntyRoot + "/Vehicles/SM_Veh_Boat_Medium_01_Hull_Attachments.prefab";
         private const string WheelFallbackPath = SyntyRoot + "/Props/SM_Prop_ShipWheel_01.prefab";
+        private const string AnchorPropPath = SyntyRoot + "/Props/SM_Prop_Anchor_01.prefab";
 
         private const string WaterMatPath = "Assets/Art/Materials/Sea_Water.mat";
         private const string WoodMatPath = "Assets/Art/Materials/Sea_DockWood.mat";
+        private const string RopeMatPath = "Assets/Art/Materials/Sea_Rope.mat";
 
         // Bump when generated-collider logic changes: prefabs carrying an older tag are rebuilt
         // and re-moored by the auto-maintenance pass.
@@ -152,7 +154,15 @@ namespace Game.EditorTools
                 EnsureRiggingClimbOnce();
                 EnsureNoNestJumpPadsOnce();
                 EnsureSailStationsOnce();
+                EnsureAnchorStationOnce();
+                EnsureAnchorRopeOnce();
+                EnsureAnchorOutboardOnce();
+                EnsureAnchorDepthOnce();
+                EnsureWaterSurfaceOnce();
+                EnsureJettiesOnce();
+                EnsureBerthZonesOnce();
                 AddStationPromptRow(logIfPresent: false);
+                AddShipStatusRow(logIfPresent: false);
                 EnsurePlayerPhysicsIsolation();
             };
         }
@@ -857,6 +867,354 @@ namespace Game.EditorTools
         }
 
         /// <summary>
+        /// In-place migration: adds the bow anchor station to an existing ship prefab WITHOUT
+        /// rebuilding it, so hand-adjusted colliders survive. Placement comes from the prefab's
+        /// own Deck strip colliders: the raised forecastle strip near the bow, port side, with
+        /// the Synty anchor prop hung on the hull below the rail.
+        /// </summary>
+        [MenuItem("Tools/Ship/Add Anchor Station To Moored Ship")]
+        public static void AddAnchorStationMenu()
+        {
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
+                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabAnchorStation(spec);
+        }
+
+        private static void PatchPrefabAnchorStation(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null || asset.GetComponentInChildren<ShipAnchorTarget>(true) != null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                if (!CreateAnchorStation(contents, path)) return;
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor station added at the port bow. " +
+                          "Hand-adjusted colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Builds the whole station subtree on loaded prefab contents: interact marker on the
+        // bulwark, anchor prop hung OUTSIDE the hull planking (the Hull box's beam, not the
+        // narrower walkable deck strip), cathead + rope rigging. False if the hull lacks the
+        // pieces the placement is derived from.
+        private static bool CreateAnchorStation(GameObject contents, string path)
+        {
+            var ship = contents.GetComponent<ShipController>();
+            BoxCollider fore = ForecastleDeck(contents);
+            BoxCollider hullBox = contents.GetComponentsInChildren<BoxCollider>(true)
+                .FirstOrDefault(b => b.name == "Hull" && !b.isTrigger);
+            if (ship == null || fore == null || hullBox == null)
+            {
+                Debug.LogWarning($"[ShipTestAreaBuilder] {path}: no ShipController/bow decks/hull box " +
+                                 "found; anchor station not added.");
+                return false;
+            }
+            float deckTop = fore.center.y + fore.size.y * 0.5f;
+            float halfW = fore.size.x * 0.5f;          // walkable forecastle strip
+            float hullHalf = hullBox.size.x * 0.5f;    // the hull's real outer beam
+
+            var station = new GameObject("AnchorStation");
+            station.transform.SetParent(contents.transform, false);
+            var view = station.AddComponent<ShipAnchorView>();
+            view.SetShip(ship);
+
+            // Interact marker on the port bulwark (+z is the bow, port is -x).
+            var marker = new GameObject("AnchorStationTarget");
+            marker.transform.SetParent(station.transform, false);
+            marker.transform.localPosition =
+                new Vector3(-(halfW - 0.15f), deckTop + 0.55f, fore.center.z);
+            var box = marker.AddComponent<BoxCollider>();
+            box.size = new Vector3(0.6f, 1.1f, 1.1f);
+            marker.AddComponent<ShipAnchorTarget>().SetShip(ship);
+            MakeKinematic(marker); // players lean on it; it must never shove the hull
+
+            // The anchor itself, clear of the hull side below the rail; ShipAnchorView
+            // rides it down when dropped. Purely visual, so no prefab link and no colliders.
+            var propAsset = AssetDatabase.LoadAssetAtPath<GameObject>(AnchorPropPath);
+            if (propAsset != null)
+            {
+                GameObject prop = Object.Instantiate(propAsset, station.transform);
+                prop.name = "AnchorProp";
+                prop.transform.localPosition =
+                    new Vector3(-(hullHalf + 0.35f), deckTop - 1.3f, fore.center.z + 0.4f);
+                prop.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                foreach (Collider c in prop.GetComponentsInChildren<Collider>(true))
+                    Object.DestroyImmediate(c);
+                view.SetAnchor(prop.transform);
+                view.SetDropDistance(AnchorDropDistanceFor(prop.transform.localPosition.y));
+                AddAnchorRigging(station, view, prop.transform, deckTop, halfW);
+            }
+            else
+            {
+                Debug.LogWarning($"[ShipTestAreaBuilder] Anchor prop missing at {AnchorPropPath}; " +
+                                 "station added without a visual.");
+            }
+            return true;
+        }
+
+        // The raised forecastle Deck strip the anchor station hangs off: the farthest-forward
+        // strip still at (or near) the bow half's highest deck level — skipping the low
+        // beakhead platform right at the stem. Null when the hull has no bow decks.
+        private static BoxCollider ForecastleDeck(GameObject contents)
+        {
+            var bowDecks = contents.GetComponentsInChildren<BoxCollider>(true)
+                .Where(b => b.name == "Deck" && b.center.z > 0f).ToList();
+            if (bowDecks.Count == 0) return null;
+            float topY = bowDecks.Max(b => b.center.y);
+            return bowDecks.OrderByDescending(b => b.center.z)
+                .First(b => b.center.y >= topY - 0.75f);
+        }
+
+        // What the anchor actually hangs from: a cathead beam running from inside the bulwark
+        // out over the ship's side to directly above the anchor, and a rope (a stretched
+        // cylinder) that ShipAnchorView keeps taut from the beam's tip to the anchor's ring
+        // as it runs out and is hauled back in. Purely visual.
+        private static void AddAnchorRigging(GameObject station, ShipAnchorView view,
+            Transform anchor, float deckTop, float halfW)
+        {
+            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+            float tip = anchor.localPosition.x, z = anchor.localPosition.z;
+            float inner = -(halfW - 0.6f); // start well inside the walkable deck
+
+            var cathead = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cathead.name = "Cathead";
+            cathead.transform.SetParent(station.transform, false);
+            cathead.transform.localPosition =
+                new Vector3((tip + inner) * 0.5f, deckTop + 0.95f, z);
+            cathead.transform.localScale =
+                new Vector3(Mathf.Abs(tip - inner) + 0.3f, 0.18f, 0.18f);
+            Object.DestroyImmediate(cathead.GetComponent<Collider>());
+            cathead.GetComponent<MeshRenderer>().sharedMaterial = wood;
+
+            var top = new GameObject("AnchorRopeTop");
+            top.transform.SetParent(station.transform, false);
+            top.transform.localPosition = new Vector3(tip, deckTop + 0.85f, z);
+
+            var rope = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            rope.name = "AnchorRope";
+            rope.transform.SetParent(station.transform, false);
+            Object.DestroyImmediate(rope.GetComponent<Collider>());
+            rope.GetComponent<MeshRenderer>().sharedMaterial =
+                GetOrCreateMaterial(RopeMatPath, new Color(0.62f, 0.51f, 0.34f), 0.05f);
+
+            // Stowed pose baked in so the prefab looks right in the editor; the view keeps
+            // it taut at runtime with the same math.
+            Vector3 ring = anchor.localPosition + Vector3.up * 0.75f;
+            Vector3 run = top.transform.localPosition - ring;
+            rope.transform.localPosition = ring + run * 0.5f;
+            rope.transform.localRotation = Quaternion.FromToRotation(Vector3.up, run.normalized);
+            rope.transform.localScale = new Vector3(0.08f, run.magnitude * 0.5f, 0.08f);
+
+            view.SetRope(rope.transform, top.transform);
+        }
+
+        /// <summary>In-place migration for prefabs whose anchor station predates the rigging:
+        /// hang the existing anchor prop from a cathead + rope.</summary>
+        [MenuItem("Tools/Ship/Add Anchor Rigging To Moored Ship")]
+        public static void AddAnchorRiggingMenu()
+        {
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
+                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabAnchorRope(spec);
+        }
+
+        private static void PatchPrefabAnchorRope(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var assetView = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
+            if (assetView == null) return; // no station yet — the station patch brings its own rigging
+            if (assetView.transform.Find("AnchorRope") != null) return; // already rigged
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var view = contents.GetComponentInChildren<ShipAnchorView>(true);
+                Transform anchor = view != null ? view.transform.Find("AnchorProp") : null;
+                BoxCollider fore = ForecastleDeck(contents);
+                if (view == null || anchor == null || fore == null)
+                {
+                    Debug.LogWarning($"[ShipTestAreaBuilder] {path}: anchor station incomplete; " +
+                                     "rigging not added.");
+                    return;
+                }
+                AddAnchorRigging(view.gameObject, view, anchor,
+                    fore.center.y + fore.size.y * 0.5f, fore.size.x * 0.5f);
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor now hangs from a cathead + rope. " +
+                          "Hand-adjusted colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        /// <summary>In-place fix: rebuilds the generated AnchorStation subtree when its prop
+        /// sits inside the hull (the first placement keyed off the narrow forecastle deck
+        /// strip instead of the hull's real beam). Everything under AnchorStation is
+        /// builder-generated, so it is safe to delete and recreate; colliders elsewhere
+        /// are untouched.</summary>
+        [MenuItem("Tools/Ship/Reposition Anchor Station Outboard")]
+        public static void RepositionAnchorStationMenu()
+        {
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
+                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabAnchorReposition(spec);
+        }
+
+        private static void PatchPrefabAnchorReposition(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var view = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
+            Transform anchor = view != null ? view.transform.Find("AnchorProp") : null;
+            BoxCollider hull = asset != null ? asset.GetComponentsInChildren<BoxCollider>(true)
+                .FirstOrDefault(b => b.name == "Hull" && !b.isTrigger) : null;
+            if (anchor == null || hull == null) return;
+            if (Mathf.Abs(anchor.localPosition.x) > hull.size.x * 0.5f) return; // already outboard
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var stale = contents.GetComponentInChildren<ShipAnchorView>(true);
+                if (stale != null) Object.DestroyImmediate(stale.gameObject);
+                if (!CreateAnchorStation(contents, path)) return;
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor station rebuilt outboard of the " +
+                          "hull planking. Hand-adjusted colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Maintenance: mark the existing scene's water plane with WaterSurface once, so the
+        // anchor (and future water-aware visuals) can measure the surface at runtime.
+        private static void EnsureWaterSurfaceOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform water = harbor != null ? harbor.transform.Find("Water") : null;
+            if (water == null || water.GetComponent<WaterSurface>() != null) return;
+            water.gameObject.AddComponent<WaterSurface>();
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] WaterSurface marker added to the harbor water plane.");
+        }
+
+        // How far the anchor must run out (m, from its stowed pose at the given ship-local
+        // height) to end up well under the harbor's water surface. Reads the live scene —
+        // the moored ship instance and the harbor water plane; falls back when absent.
+        // Bakes the FALLBACK drop only — at runtime the view measures the live WaterSurface.
+        private static float AnchorDropDistanceFor(float stowedLocalY)
+        {
+            GameObject harbor = GameObject.Find("Harbor");
+            var ship = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            Transform water = harbor != null ? harbor.transform.Find("Water") : null;
+            if (ship == null || water == null) return 6f;
+            float stowedWorldY = ship.transform.position.y + stowedLocalY;
+            return stowedWorldY - water.position.y + 2f; // 2 m under the surface
+        }
+
+        // Maintenance: deepen an existing station's drop so the anchor actually submerges
+        // (the first version guessed a distance that left it at the surface). Only ever
+        // increases the value, so a deeper hand-tuned drop is left alone.
+        private static void EnsureAnchorDepthOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var assetView = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
+            Transform anchor = assetView != null ? assetView.transform.Find("AnchorProp") : null;
+            if (anchor == null) return;
+
+            float needed = AnchorDropDistanceFor(anchor.localPosition.y);
+            var soAsset = new SerializedObject(assetView);
+            if (soAsset.FindProperty("dropDistance").floatValue >= needed - 0.05f) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var view = contents.GetComponentInChildren<ShipAnchorView>(true);
+                if (view == null) return;
+                var so = new SerializedObject(view);
+                so.FindProperty("dropDistance").floatValue = needed;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor drop deepened to {needed:F1} m " +
+                          "so it submerges below the harbor waterline.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Maintenance: move an inboard-hung anchor station outside the planking once.
+        private static void EnsureAnchorOutboardOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            var current = harbor.GetComponentInChildren<ShipController>(true);
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabAnchorReposition(spec);
+        }
+
+        // Maintenance: hang an already-patched anchor station's prop from its rigging once.
+        private static void EnsureAnchorRopeOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            var current = harbor.GetComponentInChildren<ShipController>(true);
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabAnchorRope(spec);
+        }
+
+        // Maintenance: give the moored ship's prefab its bow anchor station once.
+        private static void EnsureAnchorStationOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            var current = harbor.GetComponentInChildren<ShipController>(true);
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabAnchorStation(spec);
+        }
+
+        /// <summary>
         /// Makes players physically unable to shove the ship. Every player-facing solid collider
         /// moves onto a kinematic child Rigidbody (kinematic bodies ignore incoming contacts),
         /// leaving only the "Hull" world-collision box on the dynamic root — and that box goes on
@@ -1350,6 +1708,7 @@ namespace Game.EditorTools
             water.transform.SetParent(harbor.transform, false);
             water.transform.position = new Vector3(0f, waterY, -80f); // z -150 .. -10
             water.transform.localScale = new Vector3(14f, 1f, 14f);   // 140x140 m
+            water.AddComponent<WaterSurface>(); // runtime "where is the surface" marker
             water.GetComponent<MeshRenderer>().sharedMaterial = GetOrCreateMaterial(
                 WaterMatPath, new Color(0.09f, 0.32f, 0.42f), 0.85f);
 
@@ -1808,6 +2167,300 @@ namespace Game.EditorTools
             prop.arraySize = items.Length;
             for (int i = 0; i < items.Length; i++)
                 prop.GetArrayElementAtIndex(i).floatValue = items[i];
+        }
+
+        // ---------------------------------------------------------------- jetties (anchor stations)
+
+        private const string LanternPrefabPath = SyntyRoot + "/Props/SM_Prop_Lantern_01.prefab";
+        private const string LanternGlowMatPath = "Assets/Art/Materials/Sea_LanternGlow.mat";
+
+        // First compile after the mooring feature lands: put the jetties in.
+        private static void EnsureJettiesOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            if (harbor.transform.Find("Jetties") != null) return;
+            BuildJetties(harbor);
+        }
+
+        [MenuItem("Tools/Ship/Rebuild Harbor Jetties")]
+        public static void RebuildJettiesMenu()
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null)
+            {
+                Debug.LogError("[ShipTestAreaBuilder] No Harbor in the scene — run Tools > Ship > Build Ship Test Area first.");
+                return;
+            }
+            Transform old = harbor.transform.Find("Jetties");
+            if (old != null) Object.DestroyImmediate(old.gameObject);
+            BuildJetties(harbor);
+        }
+
+        /// <summary>
+        /// The anchor stations: free-standing jetties out on the water, each with a mooring
+        /// bollard (interact to moor/cast off the ship alongside) and a signal lantern that
+        /// lights itself when its spot is in shade. Also adds a bollard + lantern to the home
+        /// dock so the harbor itself is a mooring. Ships' decks all ride at DockTopY, so a
+        /// moored deck lines up with the jetty planks for boarding.
+        /// </summary>
+        private static void BuildJetties(GameObject harbor)
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0f;
+            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+
+            var jetties = new GameObject("Jetties");
+            jetties.transform.SetParent(harbor.transform, false);
+
+            // Two destinations: one out east past the rock slalom, one by the island at the
+            // far end (tucked to the island's shadow side, so its lantern self-lights).
+            BuildJetty(jetties, wood, waterY, "JettyEast",
+                new Vector3(48f, 0f, -85f), yawDeg: 90f);
+            BuildJetty(jetties, wood, waterY, "JettyIsland",
+                new Vector3(-40f, 0f, -130f), yawDeg: 205f);
+
+            // Home dock mooring: bollard + lantern on the existing pier, station at its edge.
+            var home = new GameObject("HomeMooring");
+            home.transform.SetParent(jetties.transform, false);
+            home.transform.position = new Vector3(DockEdgeX, 0f, -22f);
+            home.AddComponent<NetworkIdentity>();
+            var homeMooring = home.AddComponent<DockMooring>();
+            AddBerthZone(home, HomeBerthCenter, HomeBerthSize);
+            AddBollard(home, wood, homeMooring, new Vector3(-0.4f, DockTopY + 0.3f, 0f));
+            AddLantern(home, wood, new Vector3(-3.2f, 0f, -2.5f), waterY, onDeck: true);
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Jetties placed: JettyEast, JettyIsland, HomeMooring (bollard toggles moor/cast off; lanterns auto-light in shade).");
+        }
+
+        // A free-standing wooden jetty: planked deck at DockTopY on posts, a mooring bollard
+        // at the seaward end, and a lantern post. Root carries NetworkIdentity + DockMooring
+        // + the berth trigger volume that detects ships coming alongside.
+        private static void BuildJetty(GameObject parent, Material wood, float waterY,
+            string name, Vector3 position, float yawDeg)
+        {
+            var root = new GameObject(name);
+            root.transform.SetParent(parent.transform, false);
+            root.transform.position = position;
+            root.transform.rotation = Quaternion.Euler(0f, yawDeg, 0f);
+            root.AddComponent<NetworkIdentity>();
+            var mooring = root.AddComponent<DockMooring>();
+            AddBerthZone(root, JettyBerthCenter, JettyBerthSize);
+
+            // Deck: 3 m wide, 14 m long, top flush with every ship's deck height.
+            var deck = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            deck.name = "Deck";
+            deck.transform.SetParent(root.transform, false);
+            deck.transform.localPosition = new Vector3(0f, DockTopY - 0.25f, 0f);
+            deck.transform.localScale = new Vector3(3f, 0.5f, 14f);
+            deck.GetComponent<MeshRenderer>().sharedMaterial = wood;
+
+            // Corner posts down into the water.
+            float postTop = DockTopY - 0.5f;
+            float postBottom = waterY - 1.5f;
+            float postH = postTop - postBottom;
+            foreach (Vector2 corner in new[]
+                     { new Vector2(-1.2f, -6.4f), new Vector2(1.2f, -6.4f),
+                       new Vector2(-1.2f, 6.4f), new Vector2(1.2f, 6.4f),
+                       new Vector2(-1.2f, 0f), new Vector2(1.2f, 0f) })
+            {
+                var post = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                post.name = "Post";
+                post.transform.SetParent(root.transform, false);
+                post.transform.localPosition = new Vector3(corner.x, postBottom + postH * 0.5f, corner.y);
+                post.transform.localScale = new Vector3(0.35f, postH, 0.35f);
+                post.GetComponent<MeshRenderer>().sharedMaterial = wood;
+            }
+
+            AddBollard(root, wood, mooring, new Vector3(0f, DockTopY + 0.3f, -5.8f));
+            AddLantern(root, wood, new Vector3(1.1f, 0f, 6.2f), waterY, onDeck: true);
+        }
+
+        // Berth volumes: a trigger box on the mooring root that detects the hull alongside.
+        // The jetty berth straddles both sides of the planks; the home berth reaches seaward
+        // (+x) from the dock edge, long enough for every hull the harbor can moor.
+        private static readonly Vector3 JettyBerthCenter = new Vector3(0f, 1f, 0f);
+        private static readonly Vector3 JettyBerthSize = new Vector3(20f, 8f, 18f);
+        private static readonly Vector3 HomeBerthCenter = new Vector3(7f, 1f, 0f);
+        private static readonly Vector3 HomeBerthSize = new Vector3(14f, 8f, 30f);
+
+        private static void AddBerthZone(GameObject root, Vector3 center, Vector3 size)
+        {
+            var box = root.AddComponent<BoxCollider>();
+            box.isTrigger = true;
+            box.center = center;
+            box.size = size;
+        }
+
+        // Berth-zone migration: moorings used to scan by distance from their root, which a
+        // long hull parked flush could fail; give existing scene moorings their trigger
+        // volume in place (jetty roots are scene NetworkIdentities — never rebuilt).
+        private static void EnsureBerthZonesOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            bool changed = false;
+            foreach (DockMooring mooring in Object.FindObjectsByType<DockMooring>(
+                         FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (HasTriggerCollider(mooring.gameObject)) continue;
+                bool isHome = mooring.gameObject.name == "HomeMooring";
+                AddBerthZone(mooring.gameObject,
+                    isHome ? HomeBerthCenter : JettyBerthCenter,
+                    isHome ? HomeBerthSize : JettyBerthSize);
+                changed = true;
+            }
+            if (!changed) return;
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Berth trigger volumes added to scene moorings.");
+        }
+
+        private static bool HasTriggerCollider(GameObject go)
+        {
+            foreach (Collider c in go.GetComponents<Collider>())
+                if (c.isTrigger) return true;
+            return false;
+        }
+
+        // The interact point: a squat wooden bollard whose collider carries the mooring target.
+        private static void AddBollard(GameObject root, Material wood, DockMooring mooring,
+            Vector3 localPos)
+        {
+            var bollard = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            bollard.name = "MooringBollard";
+            bollard.transform.SetParent(root.transform, false);
+            bollard.transform.localPosition = localPos;
+            bollard.transform.localScale = new Vector3(0.45f, 0.6f, 0.45f);
+            bollard.GetComponent<MeshRenderer>().sharedMaterial = wood;
+            bollard.AddComponent<DockMooringTarget>().SetMooring(mooring);
+        }
+
+        // Lantern post + Synty lantern + warm point light + emissive "flame", driven by a
+        // DockLantern in Auto mode (lit only where the map is dark).
+        private static void AddLantern(GameObject root, Material wood, Vector3 localBase,
+            float waterY, bool onDeck)
+        {
+            float baseY = onDeck ? DockTopY : waterY;
+            var post = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            post.name = "LanternPost";
+            post.transform.SetParent(root.transform, false);
+            post.transform.localPosition = localBase + new Vector3(0f, baseY + 0.95f, 0f);
+            post.transform.localScale = new Vector3(0.22f, 1.9f, 0.22f);
+            post.GetComponent<MeshRenderer>().sharedMaterial = wood;
+
+            Vector3 lampPos = localBase + new Vector3(0f, baseY + 1.95f, 0f);
+            var lanternPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(LanternPrefabPath);
+            if (lanternPrefab != null)
+            {
+                var lantern = (GameObject)PrefabUtility.InstantiatePrefab(lanternPrefab);
+                lantern.name = "Lantern";
+                lantern.transform.SetParent(root.transform, false);
+                lantern.transform.localPosition = lampPos;
+            }
+
+            var lightGo = new GameObject("LanternLight");
+            lightGo.transform.SetParent(root.transform, false);
+            lightGo.transform.localPosition = lampPos + new Vector3(0f, 0.25f, 0f);
+            var lamp = lightGo.AddComponent<Light>();
+            lamp.type = LightType.Point;
+            lamp.color = new Color(1f, 0.72f, 0.42f);
+            lamp.intensity = 3f;
+            lamp.range = 22f;
+            lamp.shadows = LightShadows.None;
+
+            var glow = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            glow.name = "LanternGlow";
+            Object.DestroyImmediate(glow.GetComponent<Collider>());
+            glow.transform.SetParent(root.transform, false);
+            glow.transform.localPosition = lampPos + new Vector3(0f, 0.22f, 0f);
+            glow.transform.localScale = Vector3.one * 0.16f;
+            var glowRenderer = glow.GetComponent<MeshRenderer>();
+            glowRenderer.sharedMaterial = GetOrCreateEmissiveMaterial(
+                LanternGlowMatPath, new Color(1f, 0.72f, 0.42f));
+
+            var control = lightGo.AddComponent<DockLantern>();
+            control.SetRefs(lamp, glowRenderer);
+        }
+
+        [MenuItem("Tools/Ship/Add Ship Status Row To HUD")]
+        public static void AddShipStatusRowMenu() => AddShipStatusRow(logIfPresent: true);
+
+        // Docking feedback: a status line above the prompt slot ("Docking…", "Moored…",
+        // "Cast off!") driven by ShipStatusView from synced ship state. Not part of the
+        // GrabPromptView rows — it coexists with whatever prompt is showing.
+        private static void AddShipStatusRow(bool logIfPresent)
+        {
+            if (!File.Exists(HudPrefabPath)) return;
+
+            GameObject hud = PrefabUtility.LoadPrefabContents(HudPrefabPath);
+            try
+            {
+                if (hud.GetComponentInChildren<ShipStatusView>(true) != null)
+                {
+                    if (logIfPresent) Debug.Log("[ShipTestAreaBuilder] Ship status row already present.");
+                    return;
+                }
+
+                var view = hud.GetComponentInChildren<GrabPromptView>(true);
+                if (view == null) return;
+
+                // Style template: the CanGrab row's Text object.
+                var so = new SerializedObject(view);
+                SerializedProperty rows = so.FindProperty("rows");
+                GameObject template = null;
+                for (int i = 0; i < rows.arraySize; i++)
+                {
+                    SerializedProperty row = rows.GetArrayElementAtIndex(i);
+                    if (row.FindPropertyRelative("visibleIn").enumValueIndex == (int)GrabPromptChannel.State.CanGrab)
+                        template = row.FindPropertyRelative("root").objectReferenceValue as GameObject;
+                }
+                if (template == null) return;
+
+                GameObject statusRow = CloneRow(template, "ShipStatusRow");
+                var text = statusRow.GetComponent<UnityEngine.UI.Text>();
+                if (text != null)
+                {
+                    text.horizontalOverflow = HorizontalWrapMode.Overflow;
+                    text.text = "";
+                }
+                var rect = statusRow.GetComponent<RectTransform>();
+                if (rect != null) rect.anchoredPosition += new Vector2(0f, 44f);
+                statusRow.SetActive(false); // ShipStatusView enables it when there is a line
+
+                var status = view.gameObject.AddComponent<ShipStatusView>();
+                status.SetText(text);
+
+                PrefabUtility.SaveAsPrefabAsset(hud, HudPrefabPath);
+                Debug.Log("[ShipTestAreaBuilder] GrabPromptHUD.prefab: added the ship status row (docking feedback).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(hud);
+            }
+        }
+
+        private static Material GetOrCreateEmissiveMaterial(string path, Color color)
+        {
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (mat != null) return mat;
+
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            mat = new Material(shader);
+            mat.SetColor("_BaseColor", color);
+            mat.EnableKeyword("_EMISSION");
+            mat.SetColor("_EmissionColor", color * 4f);
+            mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            AssetDatabase.CreateAsset(mat, path);
+            return mat;
         }
 
         private static Material GetOrCreateMaterial(string path, Color color, float smoothness)

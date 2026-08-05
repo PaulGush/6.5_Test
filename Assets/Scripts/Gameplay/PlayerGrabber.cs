@@ -69,7 +69,8 @@ namespace Game.Gameplay
             // The helm shares the Interact key: while steering (or aiming at a free wheel),
             // the press belongs to PlayerHelmUser, not the grab.
             bool helmBusy = _helmUser != null
-                && (_helmUser.Engaged || _helmUser.LookingAtHelm || _helmUser.LookingAtSail);
+                && (_helmUser.Engaged || _helmUser.LookingAtHelm || _helmUser.LookingAtSail
+                    || _helmUser.LookingAtMooring || _helmUser.LookingAtAnchor);
             if (gameplay && !helmBusy && _reader != null)
             {
                 if (_reader.Interact != null && _reader.Interact.WasPressedThisFrame()) CmdGrabOrDrop();
@@ -109,6 +110,18 @@ namespace Game.Gameplay
             {
                 promptChannel.Set(GrabPromptChannel.State.CanUseStation, grab, "",
                     $"[{grab}]  {_helmUser.SailPromptText()}");
+                return;
+            }
+            if (_helmUser != null && _helmUser.LookingAtMooring)
+            {
+                promptChannel.Set(GrabPromptChannel.State.CanUseStation, grab, "",
+                    $"[{grab}]  {_helmUser.MooringPromptText()}");
+                return;
+            }
+            if (_helmUser != null && _helmUser.LookingAtAnchor)
+            {
+                promptChannel.Set(GrabPromptChannel.State.CanUseStation, grab, "",
+                    $"[{grab}]  {_helmUser.AnchorPromptText()}");
                 return;
             }
 

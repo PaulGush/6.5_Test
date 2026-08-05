@@ -34,11 +34,17 @@ namespace Game.Ship
         public bool LookingAtHelm { get; private set; }
         /// <summary>Owner-only: a mast's sail station is under the crosshair right now.</summary>
         public bool LookingAtSail => _sailInView != null;
+        /// <summary>Owner-only: a jetty's mooring bollard is under the crosshair right now.</summary>
+        public bool LookingAtMooring => _mooringInView != null;
+        /// <summary>Owner-only: the ship's bow anchor station is under the crosshair right now.</summary>
+        public bool LookingAtAnchor => _anchorInView != null;
 
         private PlayerInputReader _reader;
         private ShipRider _rider;
-        private ShipHelm _helmInView;       // owner-only, refreshed each frame
-        private ShipSailTarget _sailInView; // owner-only, refreshed each frame
+        private ShipHelm _helmInView;             // owner-only, refreshed each frame
+        private ShipSailTarget _sailInView;       // owner-only, refreshed each frame
+        private DockMooringTarget _mooringInView; // owner-only, refreshed each frame
+        private ShipAnchorTarget _anchorInView;   // owner-only, refreshed each frame
         private float _sentRudder;
 
         /// <summary>Editor-tooling hook for wiring at build time.</summary>
@@ -57,6 +63,8 @@ namespace Game.Ship
             bool gameplay = Cursor.lockState == CursorLockMode.Locked;
             _helmInView = null;
             _sailInView = null;
+            _mooringInView = null;
+            _anchorInView = null;
             if (gameplay && !Engaged) FindStationInView();
             LookingAtHelm = _helmInView != null;
 
@@ -66,6 +74,8 @@ namespace Game.Ship
                 if (Engaged) CmdLeaveHelm();
                 else if (_helmInView != null) CmdEngageHelm(_helmInView);
                 else if (_sailInView != null) CmdToggleSail(_sailInView.Station);
+                else if (_mooringInView != null) CmdToggleMooring(_mooringInView.Mooring);
+                else if (_anchorInView != null) CmdToggleAnchor(_anchorInView.Ship);
             }
         }
 
@@ -112,6 +122,21 @@ namespace Game.Ship
                 ? (_sailInView.Station.Unfurled ? "Furl sails" : "Unfurl sails")
                 : "";
 
+        /// <summary>Owner-side: prompt text when looking at a jetty's mooring bollard.</summary>
+        public string MooringPromptText() =>
+            _mooringInView != null && _mooringInView.Mooring != null
+                ? _mooringInView.Mooring.PromptText()
+                : "";
+
+        /// <summary>Owner-side: prompt text when looking at the bow anchor station.</summary>
+        public string AnchorPromptText()
+        {
+            if (_anchorInView == null || _anchorInView.Ship == null) return "";
+            ShipController ship = _anchorInView.Ship;
+            if (!ship.Anchored) return "Drop anchor";
+            return ship.WeighingAnchor ? "Let go the anchor" : "Weigh anchor";
+        }
+
         // One look-ray serves both station types; at most one can be under the crosshair.
         private void FindStationInView()
         {
@@ -129,7 +154,21 @@ namespace Game.Ship
 
             var sailTarget = hit.collider.GetComponent<ShipSailTarget>();
             if (sailTarget != null && sailTarget.Station != null)
+            {
                 _sailInView = sailTarget;
+                return;
+            }
+
+            var mooringTarget = hit.collider.GetComponent<DockMooringTarget>();
+            if (mooringTarget != null && mooringTarget.Mooring != null)
+            {
+                _mooringInView = mooringTarget;
+                return;
+            }
+
+            var anchorTarget = hit.collider.GetComponent<ShipAnchorTarget>();
+            if (anchorTarget != null && anchorTarget.Ship != null)
+                _anchorInView = anchorTarget;
         }
 
         [Command]
@@ -160,6 +199,24 @@ namespace Game.Ship
         {
             if (_helm == null || _helm.Ship == null) return;
             _helm.Ship.SetRudder(rudder);
+        }
+
+        [Command]
+        private void CmdToggleMooring(DockMooring mooring)
+        {
+            if (mooring == null) return;
+            // Must actually be at the jetty (or on the ship alongside it) — no remote mooring.
+            if (Vector3.Distance(transform.position, mooring.transform.position) > 12f) return;
+            mooring.ServerToggle();
+        }
+
+        [Command]
+        private void CmdToggleAnchor(ShipController ship)
+        {
+            if (ship == null || _rider == null) return;
+            // Must be aboard this ship — the anchor is worked from its own bow, not the dock.
+            if (_rider.CurrentShip != ship) return;
+            ship.ServerToggleAnchor();
         }
 
         [Command]

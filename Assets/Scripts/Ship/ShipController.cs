@@ -46,11 +46,15 @@ namespace Game.Ship
         [Header("Anchor")]
         [Tooltip("Extra drag on everything while the anchor is down.")]
         [SerializeField] private float anchorDrag = 3f;
+        [Tooltip("How long hauling the anchor back up takes (s). Dropping is instant — the " +
+                 "panic brake — but weighing is slow manual work at the bow.")]
+        [SerializeField] private float weighSeconds = 5f;
 
         // Helm state, synced so every client can drive visuals (wheel spin) locally. Sail state
         // lives in the per-mast ShipSailStation SyncVars.
         [SyncVar] private float _rudder;                          // -1..1
         [SyncVar] private bool _anchored;
+        [SyncVar] private bool _weighing; // anchor coming up; still holds until fully aweigh
 
         /// <summary>Current rudder deflection, -1 (hard port) to 1 (hard starboard).</summary>
         public float Rudder => _rudder;
@@ -69,10 +73,15 @@ namespace Game.Ship
 
         public int MaxSailLevel => sailStations.Length;
         public bool Anchored => _anchored;
+        /// <summary>The anchor is being hauled in (still holding until it's fully up).</summary>
+        public bool WeighingAnchor => _weighing;
         /// <summary>Signed speed along the bow in m/s. Only meaningful on the server.</summary>
         public float ForwardSpeed => Vector3.Dot(_rb.linearVelocity, transform.forward);
+        /// <summary>Speed over the water in m/s regardless of heading. Only meaningful on the server.</summary>
+        public float LinearSpeed => _rb.linearVelocity.magnitude;
 
         private Rigidbody _rb;
+        private float _weighDoneAt;       // server: when the running haul brings the anchor up
         private float _planeY;            // server: the water-plane height the ship is pinned to
         private bool _warnedPlanarDrift;  // server: log the first correction so drift causes surface
 
@@ -120,11 +129,49 @@ namespace Game.Ship
 
         [Server] public void SetRudder(float value) => _rudder = Mathf.Clamp(value, -1f, 1f);
 
-        [Server] public void SetAnchored(bool anchored) => _anchored = anchored;
+        [Server]
+        public void SetAnchored(bool anchored)
+        {
+            _anchored = anchored;
+            _weighing = false; // any hard state change ends a haul in progress
+        }
+
+        /// <summary>Server: the bow anchor station's toggle. Dropping is instant anywhere —
+        /// the panic brake. Weighing is slow manual work: the haul runs for weighSeconds
+        /// (pressing again lets the anchor go back down) and the ship stays held until the
+        /// anchor is fully up. When a jetty holds the ship it's the mooring line, not the
+        /// anchor — release through the jetty (marked manually cast off, so the berth
+        /// doesn't instantly re-catch), which is immediate.</summary>
+        [Server]
+        public void ServerToggleAnchor()
+        {
+            if (!_anchored)
+            {
+                SetAnchored(true);
+                return;
+            }
+            foreach (DockMooring dock in FindObjectsByType<DockMooring>(FindObjectsSortMode.None))
+                if (dock.MooredShip == this)
+                {
+                    dock.ServerCastOff();
+                    return;
+                }
+            if (_weighing) _weighing = false; // let go again mid-haul
+            else
+            {
+                _weighing = true;
+                _weighDoneAt = Time.time + weighSeconds;
+            }
+        }
 
         [ServerCallback]
         private void FixedUpdate()
         {
+            // A finished haul frees the ship. (Sails do NOT weigh a dropped anchor — that
+            // is deliberate manual work at the bow; only a jetty's mooring line slips by
+            // itself when the crew makes sail, handled by DockMooring.)
+            if (_anchored && _weighing && Time.time >= _weighDoneAt) SetAnchored(false);
+
             Vector3 v = _rb.linearVelocity;
             float fwdSpeed = Vector3.Dot(v, transform.forward);
 
