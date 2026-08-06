@@ -39,6 +39,9 @@ namespace Game.EditorTools
         private const string AnchorPropPath = SyntyRoot + "/Props/SM_Prop_Anchor_01.prefab";
 
         private const string WaterMatPath = "Assets/Art/Materials/Sea_Water.mat";
+        private const string SeaMeshPath = "Assets/Art/Models/SeaGrid.asset";
+        private const string SeaMeshName = "SeaDisc2"; // bump when the sea mesh layout changes
+        private const string SeaShaderName = "Sea/Waves";
         private const string WoodMatPath = "Assets/Art/Materials/Sea_DockWood.mat";
         private const string RopeMatPath = "Assets/Art/Materials/Sea_Rope.mat";
 
@@ -50,8 +53,8 @@ namespace Game.EditorTools
         private const string ShipHullLayerName = "ShipHull";
 
         private const float DockTopY = 0.9f;    // walkable dock height; every ship's deck aligns to it
-        private const float DockEdgeX = 2f;     // dock is 4 wide, centred on x=0
-        private const float WaterEdgeZ = -10f;  // water surface starts here and runs to -150
+        private const float DockEdgeX = 4f;     // dock is 8 wide, centred on x=0
+        private const float DockCenterZ = 0f;   // dock centred on the origin: it is the spawn floor
         private const float RailHeight = 0.55f; // bulwark colliders: keeps cargo in, jumpable by players
 
         // ------------------------------------------------------------------ ship specs
@@ -119,7 +122,7 @@ namespace Game.EditorTools
             public Vector3 MooringPosition => new Vector3(
                 DockEdgeX + beamHalf + 0.7f,                    // hull side ~0.7m off the dock edge
                 DockTopY - deckMainY,                           // deck boards flush with the dock
-                WaterEdgeZ - DeckHalfLength - 2f);              // whole hull over water, near the dock
+                DockCenterZ + 4.55f - DeckHalfLength);          // hull alongside, stern past the dock
         }
 
         // ------------------------------------------------------------------ entry points
@@ -158,7 +161,12 @@ namespace Game.EditorTools
                 EnsureAnchorRopeOnce();
                 EnsureAnchorOutboardOnce();
                 EnsureAnchorDepthOnce();
+                EnsureShipFloatOnce();
+                EnsurePlayerRockOnce();
                 EnsureWaterSurfaceOnce();
+                EnsureSeaWavesOnce();
+                EnsureCourseHiddenOnce();
+                EnsureDockAtOriginOnce();
                 EnsureJettiesOnce();
                 EnsureBerthZonesOnce();
                 AddStationPromptRow(logIfPresent: false);
@@ -1103,6 +1111,139 @@ namespace Game.EditorTools
             }
         }
 
+        // One-shot (EditorPrefs-keyed, so re-enabling by hand sticks): the sailing slice
+        // doesn't need the parkour course or its run clock — deactivate the course root and
+        // the run HUD canvas. Inactive scene NetworkIdentities simply don't spawn, and the
+        // RunManager stays alive (harmless, and NetworkPlayer references it).
+        private const string CourseHiddenKey = "ShipTestAreaBuilder.CourseHidden.v1";
+
+        private static void EnsureCourseHiddenOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            if (EditorPrefs.GetBool(CourseHiddenKey, false)) return;
+
+            bool changed = false;
+            foreach (string name in new[] { "CourseV2", "RunHUD" })
+            {
+                GameObject go = GameObject.Find(name); // active objects only, which is the point
+                if (go == null) continue;
+                go.SetActive(false);
+                changed = true;
+            }
+            EditorPrefs.SetBool(CourseHiddenKey, true);
+            if (!changed) return;
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Obstacle course + run clock HUD deactivated " +
+                      "(re-enable CourseV2/RunHUD in the hierarchy to bring them back).");
+        }
+
+        // Maintenance: swap the harbor's flat default plane for a dense grid running the
+        // Sea/Waves shader, so the water actually moves. Idempotent: skips once the Water
+        // object carries the SeaGrid mesh and the wave material.
+        private static void EnsureSeaWavesOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform water = harbor != null ? harbor.transform.Find("Water") : null;
+            if (water == null) return;
+            Shader shader = Shader.Find(SeaShaderName);
+            if (shader == null) return; // shader asset not imported yet; a later pass gets it
+
+            var filter = water.GetComponent<MeshFilter>();
+            var renderer = water.GetComponent<MeshRenderer>();
+            if (filter == null || renderer == null) return;
+            bool meshDone = filter.sharedMesh != null && filter.sharedMesh.name == SeaMeshName;
+            bool shaderDone = renderer.sharedMaterial != null
+                              && renderer.sharedMaterial.shader == shader;
+            if (meshDone && shaderDone) return;
+
+            if (!meshDone)
+            {
+                Mesh mesh = AssetDatabase.LoadAssetAtPath<Mesh>(SeaMeshPath);
+                if (mesh == null || mesh.name != SeaMeshName) mesh = BuildSeaGridMesh();
+                filter.sharedMesh = mesh;
+                // The grid is authored at world size, unlike the scaled 10x10 default plane.
+                water.localScale = Vector3.one;
+            }
+            if (!shaderDone)
+            {
+                Material mat = GetOrCreateMaterial(WaterMatPath, new Color(0.09f, 0.32f, 0.42f), 0.85f);
+                mat.shader = shader;
+                mat.SetColor("_ShallowColor", new Color(0.13f, 0.45f, 0.55f));
+                mat.SetColor("_DeepColor", new Color(0.05f, 0.22f, 0.33f));
+                mat.SetColor("_CrestColor", new Color(0.72f, 0.88f, 0.90f));
+                EditorUtility.SetDirty(mat);
+                renderer.sharedMaterial = mat;
+            }
+
+            AssetDatabase.SaveAssets();
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Harbor water upgraded to the Sea/Waves grid.");
+        }
+
+        // A radial disc running out to the horizon. The inner region — the whole playable
+        // sea plus the shader's detail-fade radius — keeps a uniform fine ring spacing so
+        // wave displacement is never undersampled where it is visible (undersampling is
+        // what read as smeared/stretched water); past it, rings grow geometrically to a
+        // rim 2.5 km out, where the shader has already faded the waves flat.
+        private static Mesh BuildSeaGridMesh()
+        {
+            const int Sectors = 320;
+            const float DenseStep = 2.2f; // uniform ring spacing over the playable sea
+            const float DenseReach = 180f;
+            const float Growth = 1.05f;   // then ring step ~5% of radius: aspect stays ~1
+            const float Reach = 2500f;
+
+            var radii = new List<float> { 0f };
+            for (float r = DenseStep; r < DenseReach; r += DenseStep) radii.Add(r);
+            for (float r = DenseReach; r < Reach; r *= Growth) radii.Add(r);
+            radii.Add(Reach);
+            int rings = radii.Count - 1; // ring 1..rings each hold Sectors verts; 0 is centre
+
+            var verts = new Vector3[1 + rings * Sectors];
+            for (int k = 1; k <= rings; k++)
+                for (int s = 0; s < Sectors; s++)
+                {
+                    float a = s * Mathf.PI * 2f / Sectors;
+                    verts[1 + (k - 1) * Sectors + s] =
+                        new Vector3(radii[k] * Mathf.Cos(a), 0f, radii[k] * Mathf.Sin(a));
+                }
+
+            int Idx(int ring, int s) => 1 + (ring - 1) * Sectors + s % Sectors;
+            var tris = new List<int>(rings * Sectors * 6);
+            for (int s = 0; s < Sectors; s++) // centre fan
+            {
+                tris.Add(0); tris.Add(Idx(1, s + 1)); tris.Add(Idx(1, s));
+            }
+            for (int k = 1; k < rings; k++)
+                for (int s = 0; s < Sectors; s++)
+                {
+                    int a = Idx(k, s), b = Idx(k, s + 1);
+                    int c = Idx(k + 1, s), d = Idx(k + 1, s + 1);
+                    tris.Add(a); tris.Add(d); tris.Add(c);
+                    tris.Add(a); tris.Add(b); tris.Add(d);
+                }
+
+            var mesh = new Mesh
+            {
+                name = SeaMeshName,
+                indexFormat = UnityEngine.Rendering.IndexFormat.UInt32,
+                vertices = verts,
+                triangles = tris.ToArray(),
+            };
+            mesh.RecalculateNormals();
+            // Padded so vertex displacement in the shader can't get the mesh culled.
+            mesh.bounds = new Bounds(Vector3.zero, new Vector3(Reach * 2f + 8f, 8f, Reach * 2f + 8f));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(SeaMeshPath));
+            AssetDatabase.CreateAsset(mesh, SeaMeshPath);
+            return mesh;
+        }
+
         // Maintenance: mark the existing scene's water plane with WaterSurface once, so the
         // anchor (and future water-aware visuals) can measure the surface at runtime.
         private static void EnsureWaterSurfaceOnce()
@@ -1130,6 +1271,90 @@ namespace Game.EditorTools
             if (ship == null || water == null) return 6f;
             float stowedWorldY = ship.transform.position.y + stowedLocalY;
             return stowedWorldY - water.position.y + 2f; // 2 m under the surface
+        }
+
+        /// <summary>In-place migration: visual buoyancy for an existing ship prefab. Rocks
+        /// the hull's visual subtree (and the anchor station) with the sea's wave field;
+        /// the physics root, colliders and network sync stay flat and untouched.</summary>
+        private static void PatchPrefabShipFloat(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null || asset.GetComponent<ShipFloatView>() != null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                // The Synty hull visual subtree ("...Hull..." with renderers) — NOT the
+                // plain "Hull" world-collision box on the root.
+                Transform hullVisual = null;
+                foreach (Transform child in contents.transform)
+                    if (child.name != "Hull" && child.name.Contains("Hull")
+                        && child.GetComponentInChildren<MeshRenderer>(true) != null)
+                    {
+                        hullVisual = child;
+                        break;
+                    }
+                if (contents.GetComponent<ShipController>() == null || hullVisual == null)
+                {
+                    Debug.LogWarning($"[ShipTestAreaBuilder] {path}: no ShipController/hull visual " +
+                                     "found; float view not added.");
+                    return;
+                }
+
+                var view = contents.AddComponent<ShipFloatView>();
+                var floatTargets = new List<Transform> { hullVisual };
+                Transform station = contents.transform.Find("AnchorStation");
+                if (station != null) floatTargets.Add(station);
+                view.SetTargets(floatTargets.ToArray());
+
+                BoxCollider hullBox = contents.GetComponentsInChildren<BoxCollider>(true)
+                    .FirstOrDefault(b => b.name == "Hull" && !b.isTrigger);
+                if (hullBox != null)
+                    view.SetExtents(hullBox.size.z * 0.4f, Mathf.Max(2f, hullBox.size.x * 0.45f));
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: visual buoyancy added " +
+                          $"({floatTargets.Count} rocked subtrees). Colliders and physics untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Maintenance: the player's visual model rides the ship's visual rock once.
+        private static void EnsurePlayerRockOnce()
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+            if (asset == null || asset.GetComponent<PlayerRockView>() != null) return;
+
+            GameObject player = PrefabUtility.LoadPrefabContents(PlayerPrefabPath);
+            try
+            {
+                player.AddComponent<PlayerRockView>();
+                PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
+                Debug.Log("[ShipTestAreaBuilder] Player.prefab: model now rocks with the ship deck " +
+                          "(PlayerRockView added).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(player);
+            }
+        }
+
+        // Maintenance: give the moored ship's prefab its visual buoyancy once.
+        private static void EnsureShipFloatOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            var current = harbor.GetComponentInChildren<ShipController>(true);
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            PatchPrefabShipFloat(spec);
         }
 
         // Maintenance: deepen an existing station's drop so the anchor actually submerges
@@ -1670,10 +1895,15 @@ namespace Game.EditorTools
                     helmUser.SetAimSource(np.FindProperty("cameraPivot").objectReferenceValue as Transform);
                     changed = true;
                 }
+                if (player.GetComponent<PlayerRockView>() == null)
+                {
+                    player.AddComponent<PlayerRockView>();
+                    changed = true;
+                }
                 if (changed)
                 {
                     PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
-                    Debug.Log("[ShipTestAreaBuilder] Player.prefab: added ShipRider + PlayerHelmUser.");
+                    Debug.Log("[ShipTestAreaBuilder] Player.prefab: added ShipRider + PlayerHelmUser + PlayerRockView.");
                 }
             }
             finally
@@ -1715,10 +1945,11 @@ namespace Game.EditorTools
             // Drowning: touching the water sends you back to your checkpoint.
             var hazard = new GameObject("WaterHazard");
             hazard.transform.SetParent(harbor.transform, false);
-            hazard.transform.position = new Vector3(0f, waterY - 1.8f, -80f);
+            hazard.transform.position = new Vector3(0f, waterY - 1.8f, -70f);
             var hazardBox = hazard.AddComponent<BoxCollider>();
             hazardBox.isTrigger = true;
-            hazardBox.size = new Vector3(140f, 3f, 140f);
+            hazardBox.size = new Vector3(180f, 3f, 180f); // reaches past the origin dock
+
             hazard.AddComponent<HazardVolume>();
 
             // Raised dock with stairs from the shore, plus checkpoint.
@@ -1753,8 +1984,9 @@ namespace Game.EditorTools
             Debug.Log($"[ShipTestAreaBuilder] Harbor placed: water y={waterY:F2}, ship y={shipY:F2}, dock top y={DockTopY:F2}.");
         }
 
-        /// <summary>Raised dock platform + shore stairs + the drowning checkpoint. The player
-        /// walks up the steps (each within CharacterController step height) onto the pier.</summary>
+        /// <summary>Raised dock platform + the drowning checkpoint. Centred on the origin —
+        /// it is the spawn floor now that the shore course is gone — and wide enough that
+        /// every spawn point lands on the planks.</summary>
         private static void BuildDock(GameObject harbor)
         {
             Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
@@ -1762,27 +1994,14 @@ namespace Game.EditorTools
             var dock = GameObject.CreatePrimitive(PrimitiveType.Cube);
             dock.name = "Dock";
             dock.transform.SetParent(harbor.transform, false);
-            dock.transform.position = new Vector3(0f, DockTopY - 0.25f, -16.55f);
-            dock.transform.localScale = new Vector3(4f, 0.5f, 16.9f); // z -8.1 .. -25
+            dock.transform.position = new Vector3(0f, DockTopY - 0.25f, DockCenterZ);
+            dock.transform.localScale = new Vector3(DockEdgeX * 2f, 0.5f, 16.9f);
             dock.GetComponent<MeshRenderer>().sharedMaterial = wood;
 
-            // Three steps up from the shore (0.225 each — within the CC's step offset), the
-            // fourth "step" being the dock itself.
-            for (int i = 1; i <= 3; i++)
-            {
-                var step = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                step.name = $"DockStep{i}";
-                step.transform.SetParent(harbor.transform, false);
-                float top = DockTopY * i / 4f;
-                step.transform.position = new Vector3(0f, top - 0.25f, -6f - 0.7f * i + 0.35f);
-                step.transform.localScale = new Vector3(4f, 0.5f, 0.7f);
-                step.GetComponent<MeshRenderer>().sharedMaterial = wood;
-            }
-
-            // Checkpoint on the dock so drowning doesn't send you back to the course start.
+            // Checkpoint on the dock so drowning doesn't dump you somewhere else.
             var checkpoint = new GameObject("DockCheckpoint");
             checkpoint.transform.SetParent(harbor.transform, false);
-            checkpoint.transform.position = new Vector3(0f, DockTopY + 1.1f, -20f);
+            checkpoint.transform.position = new Vector3(0f, DockTopY + 1.1f, DockCenterZ - 3.45f);
             checkpoint.transform.rotation = Quaternion.Euler(0f, 180f, 0f); // respawn facing the sea
             var cpBox = checkpoint.AddComponent<BoxCollider>();
             cpBox.isTrigger = true;
@@ -1834,6 +2053,58 @@ namespace Game.EditorTools
             if (hazard != null)
                 hazard.position = new Vector3(hazard.position.x, waterY - 1.8f, hazard.position.z);
             Debug.Log($"[ShipTestAreaBuilder] Waterline set to y={waterY:F2} for {spec.prefabName}.");
+        }
+
+        // Scene migration: slide the home dock cluster to the origin (the spawn points sit
+        // there, and with the shore course hidden the dock is the spawn floor). The moored
+        // ship, gangway, checkpoint and HomeMooring jetty all translate as one unit, so
+        // every relative pose — boarding plank, berth volume, mooring — is preserved. The
+        // shore steps are removed (there is no shore) and the drown hazard grows to cover
+        // the open water around the new dock. Idempotent via the dock's position.
+        private static void EnsureDockAtOriginOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform dock = harbor != null ? harbor.transform.Find("Dock") : null;
+            if (dock == null) return;
+            if (Mathf.Abs(dock.position.z - DockCenterZ) < 0.05f) return; // already home
+
+            // The ship shifts east by however much the dock edge moved when it widened.
+            float edgeDelta = DockEdgeX - dock.localScale.x * 0.5f;
+            var slide = new Vector3(0f, 0f, DockCenterZ - dock.position.z);
+            Vector3 shipSlide = slide + new Vector3(edgeDelta, 0f, 0f);
+
+            dock.position = new Vector3(0f, dock.position.y, DockCenterZ);
+            dock.localScale = new Vector3(DockEdgeX * 2f, dock.localScale.y, dock.localScale.z);
+
+            foreach (string name in new[] { "DockStep1", "DockStep2", "DockStep3" })
+            {
+                Transform t = harbor.transform.Find(name);
+                if (t != null) Object.DestroyImmediate(t.gameObject); // stairs to a gone shore
+            }
+
+            Transform checkpoint = harbor.transform.Find("DockCheckpoint");
+            if (checkpoint != null) checkpoint.position += slide;
+            Transform gangway = harbor.transform.Find("Gangway");
+            if (gangway != null) gangway.position += shipSlide;
+            Transform home = FindDeep(harbor.transform, "HomeMooring");
+            if (home != null) home.position = new Vector3(DockEdgeX, 0f, DockCenterZ - 5.45f);
+            var ship = harbor.GetComponentInChildren<ShipController>(true);
+            if (ship != null) ship.transform.position += shipSlide;
+
+            Transform hazard = harbor.transform.Find("WaterHazard");
+            var hazardBox = hazard != null ? hazard.GetComponent<BoxCollider>() : null;
+            if (hazardBox != null)
+            {
+                hazard.position = new Vector3(0f, hazard.position.y, -70f);
+                hazardBox.size = new Vector3(180f, 3f, 180f);
+            }
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Home dock moved to the origin (spawn floor); " +
+                      "ship, gangway, checkpoint and mooring moved with it.");
         }
 
         // Scene migration: harbors built before the raised dock get the stairs version, then the
@@ -2228,7 +2499,7 @@ namespace Game.EditorTools
             // Home dock mooring: bollard + lantern on the existing pier, station at its edge.
             var home = new GameObject("HomeMooring");
             home.transform.SetParent(jetties.transform, false);
-            home.transform.position = new Vector3(DockEdgeX, 0f, -22f);
+            home.transform.position = new Vector3(DockEdgeX, 0f, DockCenterZ - 5.45f);
             home.AddComponent<NetworkIdentity>();
             var homeMooring = home.AddComponent<DockMooring>();
             AddBerthZone(home, HomeBerthCenter, HomeBerthSize);

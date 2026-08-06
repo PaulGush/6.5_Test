@@ -19,6 +19,7 @@ GameObject:
   - component: {fileID: 5739060311011525065}
   - component: {fileID: 2865421419331488329}
   - component: {fileID: 5566778899001122334}
+  - component: {fileID: 4039947115254705632}
   m_Layer: 8
   m_Name: Player
   m_TagString: Untagged
@@ -241,6 +242,55 @@ MonoBehaviour:
   aimSource: {fileID: 7588974377487649533}
   interactRange: 3.5
   lookRadius: 0.35
+--- !u!114 &5566778899001122334
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bbec1f49914d40979bba516d7e29ea7f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerAvatar
+  syncMethod: 0
+  syncDirection: 0
+  syncMode: 0
+  syncInterval: 0
+  modelRoot: {fileID: 7428228891458324845}
+  idle: {fileID: 7400000, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  walk: {fileID: 7400002, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  jog: {fileID: 7400004, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  sprint: {fileID: 7400006, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  walkBackwards: {fileID: 7400008, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  walkCarry: {fileID: 7400010, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  crouchIdle: {fileID: 7400012, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  crouchWalk: {fileID: 7400014, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  jumpStart: {fileID: 7400016, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  jumpAir: {fileID: 7400018, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  jumpLand: {fileID: 7400020, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  climb: {fileID: 7400022, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  climbIdle: {fileID: 7400024, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  walkClipSpeed: 1.6
+  jogClipSpeed: 3.6
+  sprintClipSpeed: 6.5
+  crouchClipSpeed: 1.2
+  climbClipSpeed: 1.5
+--- !u!114 &4039947115254705632
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8b72794863775502c0c9d9bac09891b0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Ship.PlayerRockView
+  modelRoot: {fileID: 0}
+  blendRate: 3
 --- !u!1 &6925205485701196812
 GameObject:
   m_ObjectHideFlags: 0
@@ -304,41 +354,6 @@ Transform:
   - {fileID: 6538520738099337594}
   m_Father: {fileID: 8658122900933329864}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &5566778899001122334
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2107591459710408308}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bbec1f49914d40979bba516d7e29ea7f, type: 3}
-  m_Name:
-  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerAvatar
-  syncMethod: 0
-  syncDirection: 0
-  syncMode: 0
-  syncInterval: 0
-  modelRoot: {fileID: 7428228891458324845}
-  idle: {fileID: 7400000, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  walk: {fileID: 7400002, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  jog: {fileID: 7400004, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  sprint: {fileID: 7400006, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  walkBackwards: {fileID: 7400008, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  walkCarry: {fileID: 7400010, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  crouchIdle: {fileID: 7400012, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  crouchWalk: {fileID: 7400014, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  jumpStart: {fileID: 7400016, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  jumpAir: {fileID: 7400018, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  jumpLand: {fileID: 7400020, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  climb: {fileID: 7400022, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  climbIdle: {fileID: 7400024, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
-  walkClipSpeed: 1.6
-  jogClipSpeed: 3.6
-  sprintClipSpeed: 6.5
-  crouchClipSpeed: 1.2
-  climbClipSpeed: 1.5
 --- !u!1001 &7423868122900933777
 PrefabInstance:
   m_ObjectHideFlags: 0

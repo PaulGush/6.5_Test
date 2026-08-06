@@ -3459,6 +3459,7 @@ GameObject:
   - component: {fileID: 1540330901637439349}
   - component: {fileID: 8307411811352465852}
   - component: {fileID: 3831966403527312195}
+  - component: {fileID: 7821187007699221481}
   m_Layer: 0
   m_Name: Ship_Warship
   m_TagString: Untagged
@@ -3690,6 +3691,27 @@ MonoBehaviour:
   - {fileID: 6349145684499793501}
   setVisuals:
   - {fileID: 6349145684499772079}
+--- !u!114 &7821187007699221481
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5802899391642567694}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 85335881e4246e37f8296618d82aa487, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Ship.ShipFloatView
+  targets:
+  - {fileID: 6349145684500094415}
+  - {fileID: 3239099505386826526}
+  sampleHalfLength: 12.2046795
+  sampleHalfBeam: 2.589004
+  maxPitch: 1
+  maxRoll: 1.5
+  maxHeave: 0.25
+  stiffness: 1.5
 --- !u!1 &5827555043334243058
 GameObject:
   m_ObjectHideFlags: 0
