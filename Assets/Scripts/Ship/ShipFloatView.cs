@@ -10,8 +10,13 @@ namespace Game.Ship
     /// ship's VISUAL subtrees — hull meshes, anchor station — with the matching heave,
     /// pitch and roll around the waterline. Colliders, movement and sync are untouched;
     /// every peer computes the same motion from its own local sea, like the waves
-    /// themselves. Amplitudes are kept small so the visual deck never drifts far from the
-    /// flat colliders players actually stand on.
+    /// themselves.
+    ///
+    /// The hull is modelled as a damped oscillator FORCED by the sampled water plane, so
+    /// each passing wave shoulders it and it swings through and rings down — rough patches
+    /// of sea visibly work the ship harder than calm ones. Soft limits (not hard clamps)
+    /// keep the motion approaching, never exceeding, amplitudes the flat colliders
+    /// tolerate, without flattening rough and calm seas into the same rock.
     /// </summary>
     public class ShipFloatView : MonoBehaviour
     {
@@ -21,14 +26,16 @@ namespace Game.Ship
         [SerializeField] private float sampleHalfLength = 12f;
         [Tooltip("Port/starboard distance (m) of the wave sample points.")]
         [SerializeField] private float sampleHalfBeam = 2.8f;
-        [Tooltip("Visual pitch limit (deg). Keep small: masts amplify it aloft.")]
+        [Tooltip("Visual pitch soft limit (deg). Keep small: masts amplify it aloft.")]
         [SerializeField] private float maxPitch = 1.0f;
-        [Tooltip("Visual roll limit (deg). Keep small: masts amplify it aloft.")]
+        [Tooltip("Visual roll soft limit (deg). Keep small: masts amplify it aloft.")]
         [SerializeField] private float maxRoll = 1.5f;
-        [Tooltip("Visual heave limit (m).")]
+        [Tooltip("Visual heave soft limit (m).")]
         [SerializeField] private float maxHeave = 0.25f;
-        [Tooltip("How quickly the hull settles onto the sampled water plane (bigger = stiffer).")]
+        [Tooltip("Natural frequency (rad/s) of the hull's wave response; near the swell's own frequency the hull rides liveliest.")]
         [SerializeField] private float stiffness = 1.5f;
+        [Tooltip("Damping ratio of the response: below 1 the hull keeps ringing briefly after a wave shoulders it.")]
+        [SerializeField] private float damping = 0.5f;
 
         private struct Rest
         {
@@ -40,7 +47,9 @@ namespace Game.Ship
         private Rest[] _rest = { };
         private WaterSurface _water;
         private float _nextWaterScan;
-        private float _heave, _pitch, _roll;
+        private float _heave, _pitch, _roll;    // oscillator state (unbounded)
+        private float _heaveV, _pitchV, _rollV; // oscillator velocities
+        private float _heaveApplied;            // soft-limited heave composed into the pose
         private Vector3 _rockPivot;
         private Quaternion _rockRot = Quaternion.identity;
 
@@ -73,8 +82,9 @@ namespace Game.Ship
                 _water = FindAnyObjectByType<WaterSurface>();
             }
 
-            // Fit a plane to four wave samples around the hull; ease the visual pose onto
-            // it so short chop reads as gentle motion, not jitter.
+            // Fit a plane to four wave samples around the hull. Targets are deliberately
+            // UNCLAMPED: rough patches of sea must ask for more motion than calm ones, or
+            // the sea state can never read through the hull.
             float heaveT = 0f, pitchT = 0f, rollT = 0f;
             if (_water != null)
             {
@@ -88,33 +98,43 @@ namespace Game.Ship
                 float hStar = _water.HeightAt(star.x, star.z);
 
                 float mean = _water.SurfaceY;
-                heaveT = Mathf.Clamp((hBow + hStern + hPort + hStar) * 0.25f - mean,
-                    -maxHeave, maxHeave);
-                pitchT = Mathf.Clamp(
-                    Mathf.Atan2(hStern - hBow, sampleHalfLength * 2f) * Mathf.Rad2Deg,
-                    -maxPitch, maxPitch);
-                rollT = Mathf.Clamp(
-                    Mathf.Atan2(hStar - hPort, sampleHalfBeam * 2f) * Mathf.Rad2Deg,
-                    -maxRoll, maxRoll);
+                heaveT = (hBow + hStern + hPort + hStar) * 0.25f - mean;
+                pitchT = Mathf.Atan2(hStern - hBow, sampleHalfLength * 2f) * Mathf.Rad2Deg;
+                rollT = Mathf.Atan2(hStar - hPort, sampleHalfBeam * 2f) * Mathf.Rad2Deg;
             }
 
-            float k = 1f - Mathf.Exp(-stiffness * Time.deltaTime);
-            _heave = Mathf.Lerp(_heave, heaveT, k);
-            _pitch = Mathf.Lerp(_pitch, pitchT, k);
-            _roll = Mathf.Lerp(_roll, rollT, k);
+            // Damped oscillator per axis, forced by the water plane: each wave shoulders
+            // the hull, which swings through and rings down instead of gliding onto the
+            // surface. Semi-implicit Euler; dt capped so an editor hitch can't blow it up.
+            float dt = Mathf.Min(Time.deltaTime, 0.1f);
+            float w2 = stiffness * stiffness;
+            float d = 2f * damping * stiffness;
+            _heaveV += ((heaveT - _heave) * w2 - d * _heaveV) * dt;
+            _pitchV += ((pitchT - _pitch) * w2 - d * _pitchV) * dt;
+            _rollV += ((rollT - _roll) * w2 - d * _rollV) * dt;
+            _heave += _heaveV * dt;
+            _pitch += _pitchV * dt;
+            _roll += _rollV * dt;
 
             // Rock everything about the waterline, so the hull pivots where it floats
-            // rather than around the prefab origin.
+            // rather than around the prefab origin. Soft limits at the output: calm seas
+            // use a fraction of the range, heavy seas approach — never exceed — what the
+            // flat colliders tolerate.
             float pivotY = _water != null ? _water.SurfaceY - transform.position.y : 0f;
             _rockPivot = new Vector3(0f, pivotY, 0f);
-            _rockRot = Quaternion.Euler(_pitch, 0f, _roll);
+            _rockRot = Quaternion.Euler(SoftLimit(_pitch, maxPitch), 0f, SoftLimit(_roll, maxRoll));
+            _heaveApplied = SoftLimit(_heave, maxHeave);
             foreach (Rest rest in _rest)
             {
                 if (rest.T == null) continue;
                 rest.T.localRotation = _rockRot * rest.Rot;
-                rest.T.localPosition = _rockPivot + _rockRot * (rest.Pos - _rockPivot) + Vector3.up * _heave;
+                rest.T.localPosition = _rockPivot + _rockRot * (rest.Pos - _rockPivot) + Vector3.up * _heaveApplied;
             }
         }
+
+        // Smooth saturation: near-linear well below the limit, asymptotic at it.
+        private static float SoftLimit(float x, float max) =>
+            max <= 0f ? 0f : max * (float)System.Math.Tanh(x / max);
 
         /// <summary>
         /// World-space motion the current rock applies to a point resting on the flat deck:
@@ -124,7 +144,7 @@ namespace Game.Ship
         public void GetDeckMotion(Vector3 worldPos, out Vector3 offset, out Quaternion rotation)
         {
             Vector3 local = transform.InverseTransformPoint(worldPos);
-            Vector3 rocked = _rockPivot + _rockRot * (local - _rockPivot) + Vector3.up * _heave;
+            Vector3 rocked = _rockPivot + _rockRot * (local - _rockPivot) + Vector3.up * _heaveApplied;
             offset = transform.TransformPoint(rocked) - worldPos;
             rotation = transform.rotation * _rockRot * Quaternion.Inverse(transform.rotation);
         }

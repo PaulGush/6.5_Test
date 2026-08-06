@@ -3708,10 +3708,11 @@ MonoBehaviour:
   - {fileID: 3239099505386826526}
   sampleHalfLength: 12.2046795
   sampleHalfBeam: 2.589004
-  maxPitch: 1
-  maxRoll: 1.5
-  maxHeave: 0.25
-  stiffness: 1.5
+  maxPitch: 1.75
+  maxRoll: 2.5
+  maxHeave: 0.35
+  stiffness: 2
+  damping: 0.5
 --- !u!1 &5827555043334243058
 GameObject:
   m_ObjectHideFlags: 0

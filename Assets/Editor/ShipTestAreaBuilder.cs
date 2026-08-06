@@ -162,7 +162,9 @@ namespace Game.EditorTools
                 EnsureAnchorOutboardOnce();
                 EnsureAnchorDepthOnce();
                 EnsureShipFloatOnce();
+                EnsureFloatDynamicsOnce();
                 EnsurePlayerRockOnce();
+                EnsureCameraSwayOnce();
                 EnsureWaterSurfaceOnce();
                 EnsureSeaWavesOnce();
                 EnsureCourseHiddenOnce();
@@ -1321,6 +1323,72 @@ namespace Game.EditorTools
             {
                 PrefabUtility.UnloadPrefabContents(contents);
             }
+        }
+
+        // Maintenance: retune the float view once for the forced-oscillator dynamics —
+        // soft limits need headroom above the old hard clamps, and the hull's natural
+        // frequency moves near the swell's so waves visibly work the ship. Only touches
+        // values still at the old defaults; anything hand-tuned is left alone.
+        private static void EnsureFloatDynamicsOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            if (current == null) return;
+
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var assetView = asset != null ? asset.GetComponent<ShipFloatView>() : null;
+            if (assetView == null) return;
+
+            var soAsset = new SerializedObject(assetView);
+            bool AtOldDefault(string prop, float value) =>
+                Mathf.Abs(soAsset.FindProperty(prop).floatValue - value) < 0.001f;
+            if (!AtOldDefault("maxPitch", 1.0f) || !AtOldDefault("maxRoll", 1.5f)
+                || !AtOldDefault("maxHeave", 0.25f) || !AtOldDefault("stiffness", 1.5f)) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var view = contents.GetComponent<ShipFloatView>();
+                if (view == null) return;
+                var so = new SerializedObject(view);
+                so.FindProperty("maxPitch").floatValue = 1.75f;
+                so.FindProperty("maxRoll").floatValue = 2.5f;
+                so.FindProperty("maxHeave").floatValue = 0.35f;
+                so.FindProperty("stiffness").floatValue = 2.0f;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: float view retuned for wave-forced " +
+                          "dynamics (soft limits 1.75°/2.5°/0.35 m, hull frequency 2.0 rad/s).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Maintenance: the first-person camera gets its subtle deck sway once. The rig is
+        // hand-authored in the scene, so this patches the scene object, not a prefab.
+        private static void EnsureCameraSwayOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            var rig = Object.FindAnyObjectByType<Game.Player.CameraRig>(FindObjectsInactive.Include);
+            if (rig == null) return;
+
+            var so = new SerializedObject(rig);
+            var firstPerson = so.FindProperty("firstPerson").objectReferenceValue
+                as Unity.Cinemachine.CinemachineCamera;
+            if (firstPerson == null
+                || firstPerson.GetComponent<Game.Player.CameraDeckSway>() != null) return;
+
+            firstPerson.gameObject.AddComponent<Game.Player.CameraDeckSway>();
+            Scene scene = firstPerson.gameObject.scene;
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] First-person camera: subtle deck sway added (CameraDeckSway).");
         }
 
         // Maintenance: the player's visual model rides the ship's visual rock once.

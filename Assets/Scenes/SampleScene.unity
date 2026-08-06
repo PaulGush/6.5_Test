@@ -4668,6 +4668,7 @@ GameObject:
   - component: {fileID: 658687347}
   - component: {fileID: 658687346}
   - component: {fileID: 658687345}
+  - component: {fileID: 658687349}
   m_Layer: 0
   m_Name: CM FirstPerson
   m_TagString: Untagged
@@ -4759,6 +4760,21 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &658687349
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 658687344}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c2b36c76aacaaca92b52b7d04d6bb4e0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.CameraDeckSway
+  positionWeight: 0.6
+  rotationWeight: 0.35
+  blendRate: 3
 --- !u!1 &663829452
 GameObject:
   m_ObjectHideFlags: 0
