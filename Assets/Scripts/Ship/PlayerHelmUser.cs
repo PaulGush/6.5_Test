@@ -30,6 +30,8 @@ namespace Game.Ship
         [SyncVar] private ShipHelm _helm;
 
         public bool Engaged => _helm != null;
+        /// <summary>The helm this player is steering, or null. Synced, so valid on every client.</summary>
+        public ShipHelm CurrentHelm => _helm;
         /// <summary>Owner-only: a free helm is under the crosshair right now.</summary>
         public bool LookingAtHelm { get; private set; }
         /// <summary>Owner-only: a mast's sail station is under the crosshair right now.</summary>

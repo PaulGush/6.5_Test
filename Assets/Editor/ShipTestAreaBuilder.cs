@@ -164,6 +164,7 @@ namespace Game.EditorTools
                 EnsureShipFloatOnce();
                 EnsureFloatDynamicsOnce();
                 EnsurePlayerRockOnce();
+                EnsureHelmPoseOnce();
                 EnsureCameraSwayOnce();
                 EnsureWaterSurfaceOnce();
                 EnsureSeaWavesOnce();
@@ -1370,6 +1371,26 @@ namespace Game.EditorTools
             }
         }
 
+        // Maintenance: the helmsman's visual stance (face the wheel, grip the rim) once.
+        private static void EnsureHelmPoseOnce()
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+            if (asset == null || asset.GetComponent<PlayerHelmPose>() != null) return;
+
+            GameObject player = PrefabUtility.LoadPrefabContents(PlayerPrefabPath);
+            try
+            {
+                player.AddComponent<PlayerHelmPose>();
+                PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
+                Debug.Log("[ShipTestAreaBuilder] Player.prefab: helmsman stance added " +
+                          "(PlayerHelmPose — face the wheel, hands on the rim).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(player);
+            }
+        }
+
         // Maintenance: the first-person camera gets its subtle deck sway once. The rig is
         // hand-authored in the scene, so this patches the scene object, not a prefab.
         private static void EnsureCameraSwayOnce()
@@ -1968,10 +1989,15 @@ namespace Game.EditorTools
                     player.AddComponent<PlayerRockView>();
                     changed = true;
                 }
+                if (player.GetComponent<PlayerHelmPose>() == null)
+                {
+                    player.AddComponent<PlayerHelmPose>();
+                    changed = true;
+                }
                 if (changed)
                 {
                     PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
-                    Debug.Log("[ShipTestAreaBuilder] Player.prefab: added ShipRider + PlayerHelmUser + PlayerRockView.");
+                    Debug.Log("[ShipTestAreaBuilder] Player.prefab: added ShipRider + PlayerHelmUser + PlayerRockView + PlayerHelmPose.");
                 }
             }
             finally

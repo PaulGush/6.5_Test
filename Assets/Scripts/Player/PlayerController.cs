@@ -4,7 +4,10 @@ namespace Game.Player
 {
     /// <summary>
     /// CharacterController movement simulation: walk/sprint, gravity, jump, and
-    /// mouse/stick look (yaw on the body, pitch on a camera pivot).
+    /// mouse/stick look. In first person the body owns yaw and the camera pivot
+    /// takes pitch. In free look (third person) the pivot takes yaw too — the
+    /// camera orbits without turning the body — movement is camera-relative, and
+    /// the body turns to face wherever it is walking.
     ///
     /// This component is a pure, deterministic step — <see cref="Tick"/> over
     /// (current state, input, dt). It does NOT read input or run on its own; a
@@ -48,11 +51,14 @@ namespace Game.Player
         [SerializeField] private float lookSensitivity = 0.12f;
         [SerializeField] private float minPitch = -80f;
         [SerializeField] private float maxPitch = 80f;
-        [Tooltip("Child transform that receives pitch (the camera mounts here). Yaw is applied to the body.")]
+        [Tooltip("Child transform that receives pitch (the camera mounts here). Yaw is applied to the body, or to this pivot in free look.")]
         [SerializeField] private Transform cameraPivot;
+        [Tooltip("How fast the body turns to face the move direction in free look (deg/s).")]
+        [SerializeField] private float faceTurnSpeed = 540f;
 
         private CharacterController _cc;
         private float _pitch;
+        private float _camYaw; // free-look camera yaw, relative to the body
         private float _verticalVelocity;
         private Vector3 _externalVel; // launch-imparted horizontal momentum, bleeds off over time
         private readonly Collider[] _ladderBuf = new Collider[8]; // reused by the climb overlap check
@@ -110,6 +116,7 @@ namespace Game.Player
             _verticalVelocity = 0f;
             _externalVel = Vector3.zero;
             _pitch = 0f;
+            _camYaw = 0f;
             // Reset crouch back to standing.
             _crouchT = 0f;
             _cc.height = _standHeight;
@@ -158,17 +165,40 @@ namespace Game.Player
         private void ApplyLook(in PlayerInputState input)
         {
             // Look deltas are already frame-accumulated, so they are not scaled by dt.
-            transform.Rotate(0f, input.Look.x * lookSensitivity, 0f);
+            if (input.FreeLook)
+            {
+                // Free look: yaw orbits the camera pivot; the body is steered by movement.
+                _camYaw += input.Look.x * lookSensitivity;
+            }
+            else
+            {
+                // First person: the body owns yaw. Fold any free-look offset back into the
+                // body first, so the view direction survives the mode switch.
+                if (_camYaw != 0f)
+                {
+                    transform.Rotate(0f, _camYaw, 0f);
+                    _camYaw = 0f;
+                }
+                transform.Rotate(0f, input.Look.x * lookSensitivity, 0f);
+            }
 
             _pitch = Mathf.Clamp(_pitch - input.Look.y * lookSensitivity, minPitch, maxPitch);
+            ApplyPivot();
+        }
+
+        private void ApplyPivot()
+        {
             if (cameraPivot != null)
-                cameraPivot.localRotation = Quaternion.Euler(_pitch, 0f, 0f);
+                cameraPivot.localRotation = Quaternion.Euler(_pitch, _camYaw, 0f);
         }
 
         private void ApplyMove(in PlayerInputState input, float dt)
         {
             float speed = input.Crouch ? crouchSpeed : input.Sprint ? sprintSpeed : walkSpeed;
-            Vector3 wish = transform.right * input.Move.x + transform.forward * input.Move.y;
+            // Move in the LOOK frame — the body's in first person, the camera's in free
+            // look — so WASD always means what the player sees on screen.
+            Quaternion frame = transform.rotation * Quaternion.Euler(0f, _camYaw, 0f);
+            Vector3 wish = frame * new Vector3(input.Move.x, 0f, input.Move.y);
             wish = Vector3.ClampMagnitude(wish, 1f) * speed;
 
             // Climb mode: inside a Ladder volume, forward/back input becomes vertical motion and
@@ -196,6 +226,19 @@ namespace Game.Player
             {
                 _verticalVelocity += gravity * dt;
                 _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, airLaunchDamping * dt);
+            }
+
+            // Free look: the body turns to face where it is walking, and the camera pivot
+            // counter-rotates so the view holds steady while the body swings under it.
+            // Not while climbing — on a ladder you keep facing the rungs.
+            if (input.FreeLook && !IsClimbing && input.Move.sqrMagnitude > 0.0001f)
+            {
+                float yaw = transform.eulerAngles.y;
+                float targetYaw = Mathf.Atan2(wish.x, wish.z) * Mathf.Rad2Deg;
+                float delta = Mathf.DeltaAngle(yaw, Mathf.MoveTowardsAngle(yaw, targetYaw, faceTurnSpeed * dt));
+                transform.Rotate(0f, delta, 0f);
+                _camYaw -= delta;
+                ApplyPivot();
             }
 
             Vector3 velocity = wish + _externalVel + Vector3.up * _verticalVelocity;

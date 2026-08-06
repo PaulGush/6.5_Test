@@ -31,6 +31,10 @@ namespace Game.Ship
 
         public ShipController Ship => ship;
         public bool Occupied => _user != null;
+        /// <summary>The physical wheel prop (read by the helmsman's visual stance).</summary>
+        public Transform WheelVisual => wheelVisual;
+        /// <summary>The wheel's spin axis in the wheel's local space (the rim plane's normal).</summary>
+        public Vector3 WheelAxis => wheelSpinAxis;
 
         private Quaternion _wheelBaseRot;
         private float _shownRudder; // locally smoothed rudder driving the wheel visual

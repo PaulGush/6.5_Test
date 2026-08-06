@@ -177,6 +177,9 @@ namespace Game.Player
 
             PlayerInputState s = _input.Sample();
             if (DebugAutoWalk) s.Move = new Vector2(0f, 1f); // forward, for replication testing
+            // Third person is free look: the camera orbits and Move steers the body.
+            // Camera choice is client-side, so it travels with the input.
+            s.FreeLook = !CameraRig.IsFirstPerson;
             // At a ship's helm, Move becomes rudder/sail commands and is stripped from the state.
             if (_helmUser != null) _helmUser.HandleInput(ref s);
 
@@ -185,9 +188,9 @@ namespace Game.Player
                 // the local connection. Mirror drains that queue after LateUpdate, which would
                 // move us AFTER the camera has already updated each frame — the camera rides
                 // one stale frame behind the model, which reads as judder in third person.
-                ServerMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
+                ServerMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, s.FreeLook, Time.deltaTime);
             else
-                CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, Time.deltaTime);
+                CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, s.FreeLook, Time.deltaTime);
         }
 
         /// <summary>Server-authoritative respawn: reset the simulation pose and snap clients.</summary>
@@ -205,13 +208,13 @@ namespace Game.Player
 
         // Owner -> server. Server is authoritative over the simulation.
         [Command]
-        private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, float dt)
-            => ServerMove(move, look, sprint, jumpPressed, crouch, dt);
+        private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, bool freeLook, float dt)
+            => ServerMove(move, look, sprint, jumpPressed, crouch, freeLook, dt);
 
         // Shared server-side movement step: remote owners arrive here via CmdMove, the
         // host's own player calls it synchronously from Update (see there for why).
         [Server]
-        private void ServerMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, float dt)
+        private void ServerMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, bool freeLook, float dt)
         {
             // Never trust client-supplied dt blindly; clamp to avoid teleport exploits/hitches.
             dt = Mathf.Clamp(dt, 0f, 0.1f);
@@ -231,6 +234,7 @@ namespace Game.Player
                 Sprint = sprint,
                 Crouch = crouch,
                 JumpPressed = jumpPressed,
+                FreeLook = freeLook,
             };
             _controller.Tick(input, dt);
         }
