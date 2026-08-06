@@ -80,17 +80,30 @@ namespace Game.Ship
         /// <summary>Speed over the water in m/s regardless of heading. Only meaningful on the server.</summary>
         public float LinearSpeed => _rb.linearVelocity.magnitude;
 
+        [Tooltip("How quickly the hull's height chases the wave surface (1/s). Low = a heavy " +
+                 "hull that shoulders through chop; the swell still carries it up and over.")]
+        [SerializeField] private float heaveResponse = 2.5f;
+
         private Rigidbody _rb;
         private float _weighDoneAt;       // server: when the running haul brings the anchor up
-        private float _planeY;            // server: the water-plane height the ship is pinned to
+        [SyncVar] private float _planeY;  // the calm-water baseline the heave oscillates around
         private bool _warnedPlanarDrift;  // server: log the first correction so drift causes surface
+        private Game.Gameplay.WaterSurface _water;
+        private float _nextWaterScan;
+
+        /// <summary>How far the hull currently rides above its calm-water baseline. Valid on
+        /// every peer (the baseline is synced; the height comes off the replicated transform).
+        /// Visual layers subtract this so they only add what the physics hasn't already done.</summary>
+        public float HeaveOffset => transform.position.y - _planeY;
 
         private void Awake()
         {
             _rb = GetComponent<Rigidbody>();
-            // Planar constraint: free X/Z translation and yaw; the water "holds" everything else.
-            _rb.constraints = RigidbodyConstraints.FreezePositionY
-                            | RigidbodyConstraints.FreezeRotationX
+            // Planar constraint on rotation only: X/Z translation and yaw are free, and the
+            // hull's HEIGHT is driven onto the wave field each step — the ship really rides
+            // the sea. Tilt stays visual (ShipFloatView) so the walkable colliders and
+            // everything networked keep a level deck.
+            _rb.constraints = RigidbodyConstraints.FreezeRotationX
                             | RigidbodyConstraints.FreezeRotationZ;
             _rb.useGravity = false;
             _rb.linearDamping = 0f;   // drag is modelled explicitly, per-axis, in FixedUpdate
@@ -196,40 +209,62 @@ namespace Game.Ship
                 ForceMode.Acceleration);
             _rb.AddTorque(-_rb.angularVelocity * (yawDrag + extra), ForceMode.Acceleration);
 
-            EnforcePlane();
+            DriveHeave(v);
+            EnforceLevel();
         }
 
-        // Hard planar lock, belt-and-braces on top of the Rigidbody constraints: whatever manages
-        // to pitch/roll/heave the ship (a collider glitch, an unexpected torque path), flatten it
-        // back to yaw-only at the pinned height before anyone can see it, and surface the first
-        // occurrence in the log so the cause can be chased.
+        // Buoyant heave: chase the wave field's height under the hull (sampled at a few
+        // stations and averaged, so chop shorter than the ship cancels out) with a lagged
+        // vertical velocity — the swell carries the whole PHYSICAL ship, colliders, crew
+        // and all, up and over. Everyone aboard rides for free via parenting, exactly as
+        // they already do for the ship's planar motion; the synced wave clock keeps every
+        // peer's sea agreeing with where the server put the hull.
         [Server]
-        private void EnforcePlane()
+        private void DriveHeave(Vector3 velocity)
+        {
+            if (_water == null && Time.time >= _nextWaterScan)
+            {
+                _nextWaterScan = Time.time + 2f;
+                _water = FindAnyObjectByType<Game.Gameplay.WaterSurface>();
+            }
+
+            float targetY = _planeY;
+            if (_water != null)
+            {
+                Vector3 fwd10 = transform.forward * 10f;
+                Vector3 p = _rb.position;
+                float mean = 0.25f * (
+                    _water.HeightAt(p.x + fwd10.x, p.z + fwd10.z) +
+                    _water.HeightAt(p.x - fwd10.x, p.z - fwd10.z) +
+                    _water.HeightAt(p.x + transform.right.x * 3f, p.z + transform.right.z * 3f) +
+                    _water.HeightAt(p.x - transform.right.x * 3f, p.z - transform.right.z * 3f));
+                targetY += mean - _water.SurfaceY;
+            }
+            _rb.linearVelocity = new Vector3(velocity.x,
+                (targetY - _rb.position.y) * heaveResponse, velocity.z);
+        }
+
+        // Level lock, belt-and-braces on top of the Rigidbody constraints: whatever manages
+        // to pitch or roll the hull (a collider glitch, an unexpected torque path), flatten
+        // it back to yaw-only before anyone can see it, and surface the first occurrence in
+        // the log so the cause can be chased. Heave is legitimate now — the waves own it.
+        [Server]
+        private void EnforceLevel()
         {
             Vector3 e = _rb.rotation.eulerAngles;
             bool tilted = Mathf.Abs(Mathf.DeltaAngle(0f, e.x)) > 0.05f
                        || Mathf.Abs(Mathf.DeltaAngle(0f, e.z)) > 0.05f;
-            if (tilted)
-            {
-                _rb.rotation = Quaternion.Euler(0f, e.y, 0f);
-                Vector3 av = _rb.angularVelocity;
-                _rb.angularVelocity = new Vector3(0f, av.y, 0f);
-            }
+            if (!tilted) return;
 
-            Vector3 p = _rb.position;
-            bool heaved = Mathf.Abs(p.y - _planeY) > 0.001f;
-            if (heaved)
-            {
-                _rb.position = new Vector3(p.x, _planeY, p.z);
-                Vector3 v = _rb.linearVelocity;
-                _rb.linearVelocity = new Vector3(v.x, 0f, v.z);
-            }
+            _rb.rotation = Quaternion.Euler(0f, e.y, 0f);
+            Vector3 av = _rb.angularVelocity;
+            _rb.angularVelocity = new Vector3(0f, av.y, 0f);
 
-            if ((tilted || heaved) && !_warnedPlanarDrift)
+            if (!_warnedPlanarDrift)
             {
                 _warnedPlanarDrift = true;
-                Debug.LogWarning($"[ShipController] Corrected off-plane drift (tilt={tilted}, heave={heaved}). " +
-                                 "Something is fighting the planar constraints — check for stray colliders/forces.", this);
+                Debug.LogWarning("[ShipController] Corrected off-level drift (tilt). " +
+                                 "Something is fighting the rotation constraints — check for stray colliders/forces.", this);
             }
         }
 

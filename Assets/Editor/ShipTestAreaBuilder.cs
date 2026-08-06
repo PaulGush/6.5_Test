@@ -44,6 +44,9 @@ namespace Game.EditorTools
         private const string SeaShaderName = "Sea/Waves";
         private const string WoodMatPath = "Assets/Art/Materials/Sea_DockWood.mat";
         private const string RopeMatPath = "Assets/Art/Materials/Sea_Rope.mat";
+        private const string SandMatPath = "Assets/Art/Materials/Sea_Sand.mat";
+        private const string IslandMeshPath = "Assets/Art/Models/StartIsland.asset";
+        private const string IslandMeshName = "StartIsland1"; // bump when the island layout changes
 
         // Bump when generated-collider logic changes: prefabs carrying an older tag are rebuilt
         // and re-moored by the auto-maintenance pass.
@@ -171,6 +174,9 @@ namespace Game.EditorTools
                 EnsureCourseHiddenOnce();
                 EnsureDockAtOriginOnce();
                 EnsureJettiesOnce();
+                EnsureStartIslandOnce();
+                EnsureDockShoreStairsOnce();
+                EnsureDockPilesOnce();
                 EnsureBerthZonesOnce();
                 AddStationPromptRow(logIfPresent: false);
                 AddShipStatusRow(logIfPresent: false);
@@ -352,14 +358,14 @@ namespace Game.EditorTools
                     ? bounds.max.z - root.transform.position.z + 0.3f : zMax + 0.5f;
                 BuildDeckVolumes(root, beamHalf, yardHalfSpan, xCenter, zMin, zMax, bowZ, deckLowY, maxLocalY);
 
-                // Physics + networking on the root; planar constraints baked into the asset so
-                // they hold from the very first physics step.
+                // Physics + networking on the root; rotation constraints baked into the asset
+                // so they hold from the very first physics step. Height is NOT frozen: the
+                // ship's heave rides the wave field (ShipController drives it at runtime).
                 var rb = root.AddComponent<Rigidbody>();
                 rb.mass = spec.mass;
                 rb.useGravity = false;
                 rb.interpolation = RigidbodyInterpolation.Interpolate;
-                rb.constraints = RigidbodyConstraints.FreezePositionY
-                               | RigidbodyConstraints.FreezeRotationX
+                rb.constraints = RigidbodyConstraints.FreezeRotationX
                                | RigidbodyConstraints.FreezeRotationZ;
 
                 root.AddComponent<NetworkIdentity>();
@@ -2540,6 +2546,339 @@ namespace Game.EditorTools
         private const string LanternGlowMatPath = "Assets/Art/Materials/Sea_LanternGlow.mat";
 
         // First compile after the mooring feature lands: put the jetties in.
+        // ---------------------------------------------------------------- start island
+
+        // The home island the dock belongs to. Coastline and height are analytic and
+        // deterministic (no RNG), so the mesh, the dressing placements and any future
+        // queries all agree about where the sand is.
+        private const float IslandCenterZ = 38f;   // island centre, north of the dock
+        private const float IslandBaseRadius = 24f;
+        private const float IslandDockLobe = 11f;  // extra reach toward the dock, burying its north end
+        private const float IslandSkirt = 12f;     // submerged sand ring outside the coastline
+        private const float BeachSlope = 0.32f;    // rise per metre inland along the beach (~18°)
+        private const float IslandPlateau = 3.2f;  // extra height of the grassy top above the beach crest
+
+        // Coastline radius (m from the island centre) toward angle a (radians, 0 = north/+Z).
+        // A tight lobe reaches south toward the dock; elsewhere two sine bands roughen the
+        // coast. The noise fades out inside the lobe so the dock approach stays predictable.
+        private static float IslandRadius(float a)
+        {
+            float lobe = Mathf.Pow(Mathf.Max(0f, Mathf.Cos(a - Mathf.PI)), 8f);
+            float noise = 2.6f * Mathf.Sin(3f * a + 1.7f) + 1.7f * Mathf.Sin(7f * a + 0.4f);
+            return IslandBaseRadius + lobe * IslandDockLobe + (1f - lobe) * noise;
+        }
+
+        // Sand height relative to the waterline, s metres inland of the coast (negative =
+        // out to sea). A straight beach slope caps into a low crest; the interior rises to
+        // a plateau. The same line continues underwater as the seabed skirt.
+        private static float IslandHeight(float s)
+        {
+            float hill = IslandPlateau * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(8f, 22f, s));
+            return Mathf.Min(s * BeachSlope, 1f + hill);
+        }
+
+        // Sand height (relative to the waterline) at a world-space (x, z) — the single
+        // source both the mesh and the dressing sample. A berth channel keeps the water
+        // east of the dock deep, so moored hulls never touch the island's underwater
+        // skirt; it starts past the dock's east edge, so the beach ramp is untouched.
+        private static float IslandHeightWorld(float x, float z)
+        {
+            float dx = x, dz = z - IslandCenterZ;
+            float dist = Mathf.Sqrt(dx * dx + dz * dz);
+            float h = IslandHeight(IslandRadius(Mathf.Atan2(dx, dz)) - dist);
+            float channel = Mathf.Clamp01(0.5f * Mathf.Min(x - 8.2f, 12f - z));
+            return Mathf.Lerp(h, Mathf.Min(h, -2.4f), channel);
+        }
+
+        // Maintenance: raise the home island behind the dock once.
+        private static void EnsureStartIslandOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null || harbor.transform.Find("StartIsland") != null) return;
+            BuildStartIsland(harbor);
+        }
+
+        [MenuItem("Tools/Ship/Rebuild Start Island")]
+        public static void RebuildStartIslandMenu()
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null)
+            {
+                Debug.LogError("[ShipTestAreaBuilder] No Harbor in the scene — run Tools > Ship > Build Ship Test Area first.");
+                return;
+            }
+            Transform old = harbor.transform.Find("StartIsland");
+            if (old != null) Object.DestroyImmediate(old.gameObject);
+            Transform stairs = harbor.transform.Find("DockShoreStairs");
+            if (stairs != null) Object.DestroyImmediate(stairs.gameObject); // re-derived with the island
+            Transform piles = harbor.transform.Find("DockPiles");
+            if (piles != null) Object.DestroyImmediate(piles.gameObject); // stair supports track the flight
+            AssetDatabase.DeleteAsset(IslandMeshPath); // regenerate from the current layout code
+            BuildStartIsland(harbor);
+        }
+
+        private static void BuildStartIsland(GameObject harbor)
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0.4f;
+
+            var root = new GameObject("StartIsland");
+            root.transform.SetParent(harbor.transform, false);
+            // Mesh heights are relative to the waterline, so the island sits AT it.
+            root.transform.position = new Vector3(0f, waterY, IslandCenterZ);
+
+            Mesh mesh = AssetDatabase.LoadAssetAtPath<Mesh>(IslandMeshPath);
+            if (mesh == null || mesh.name != IslandMeshName) mesh = BuildIslandMesh();
+
+            var sand = new GameObject("Sand");
+            sand.transform.SetParent(root.transform, false);
+            sand.AddComponent<MeshFilter>().sharedMesh = mesh;
+            sand.AddComponent<MeshRenderer>().sharedMaterial = GetOrCreateMaterial(
+                SandMatPath, new Color(0.87f, 0.78f, 0.55f), 0.05f);
+            sand.AddComponent<MeshCollider>().sharedMesh = mesh; // static: non-convex is fine
+
+            PlaceIslandFlora(root);
+            if (harbor.transform.Find("DockShoreStairs") == null)
+                BuildDockShoreStairs(harbor);
+            if (harbor.transform.Find("DockPiles") == null)
+                BuildDockPiles(harbor);
+
+            // The drown hazard was sized for the open water south of the dock; stretch it
+            // north so the island's coastal shallows drown too.
+            Transform hazard = harbor.transform.Find("WaterHazard");
+            var hazardBox = hazard != null ? hazard.GetComponent<BoxCollider>() : null;
+            if (hazardBox != null)
+            {
+                hazard.position = new Vector3(0f, hazard.position.y, -42.5f);
+                hazardBox.size = new Vector3(180f, 3f, 235f);
+            }
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            AssetDatabase.SaveAssets();
+            Debug.Log("[ShipTestAreaBuilder] Start island raised behind the dock: sand mesh + " +
+                      "collider, beach ramp over the dock's north end, palms and dressing; " +
+                      "drown hazard stretched to its shores.");
+        }
+
+        // Radial sand mound: rings out to the coastline-plus-skirt, heights from the shared
+        // profile. Same disc topology as the sea grid, but the (sin, cos) parametrization
+        // mirrors it, so the winding is reversed to keep normals up.
+        private static Mesh BuildIslandMesh()
+        {
+            const int Rings = 40, Sectors = 112;
+            var verts = new Vector3[1 + Rings * Sectors];
+            verts[0] = new Vector3(0f, IslandHeightWorld(0f, IslandCenterZ), 0f);
+            for (int k = 1; k <= Rings; k++)
+                for (int s = 0; s < Sectors; s++)
+                {
+                    float a = s * Mathf.PI * 2f / Sectors;
+                    float r = (IslandRadius(a) + IslandSkirt) * k / Rings;
+                    float x = Mathf.Sin(a) * r, z = Mathf.Cos(a) * r;
+                    verts[1 + (k - 1) * Sectors + s] = new Vector3(
+                        x, IslandHeightWorld(x, IslandCenterZ + z), z);
+                }
+            var uvs = new Vector2[verts.Length];
+            for (int i = 0; i < verts.Length; i++)
+                uvs[i] = new Vector2(verts[i].x, verts[i].z) * 0.08f;
+
+            int Idx(int ring, int s) => 1 + (ring - 1) * Sectors + s % Sectors;
+            var tris = new List<int>(Rings * Sectors * 6);
+            for (int s = 0; s < Sectors; s++) // centre fan
+            {
+                tris.Add(0); tris.Add(Idx(1, s)); tris.Add(Idx(1, s + 1));
+            }
+            for (int k = 1; k < Rings; k++)
+                for (int s = 0; s < Sectors; s++)
+                {
+                    int a = Idx(k, s), b = Idx(k, s + 1);
+                    int c = Idx(k + 1, s), d = Idx(k + 1, s + 1);
+                    tris.Add(a); tris.Add(c); tris.Add(d);
+                    tris.Add(a); tris.Add(d); tris.Add(b);
+                }
+
+            var mesh = new Mesh
+            {
+                name = IslandMeshName,
+                vertices = verts,
+                uv = uvs,
+                triangles = tris.ToArray(),
+            };
+            mesh.RecalculateNormals();
+            Directory.CreateDirectory(Path.GetDirectoryName(IslandMeshPath));
+            AssetDatabase.CreateAsset(mesh, IslandMeshPath);
+            return mesh;
+        }
+
+        // Maintenance: stairs from the dock down to the island beach once. The dock's deck
+        // rides ~4.7 m above the warship's low waterline, so the beach passes well below
+        // it — without stairs the island is look-but-don't-touch.
+        private static void EnsureDockShoreStairsOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null || harbor.transform.Find("StartIsland") == null) return;
+            if (harbor.transform.Find("DockShoreStairs") != null) return;
+            BuildDockShoreStairs(harbor);
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+        }
+
+        // Maintenance: piles under the home dock once. The dock deck rides ~4.7 m above the
+        // water on nothing at all; give it the same wooden posts the jetties stand on, plus
+        // supports tucked under the shore stairs.
+        private static void EnsureDockPilesOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null || harbor.transform.Find("Dock") == null) return;
+            if (harbor.transform.Find("DockPiles") != null) return;
+            BuildDockPiles(harbor);
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+        }
+
+        private static void BuildDockPiles(GameObject harbor)
+        {
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0f;
+            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+
+            var root = new GameObject("DockPiles");
+            root.transform.SetParent(harbor.transform, false);
+
+            // Rows of posts along both long edges of the slab, jetty-style: tucked under
+            // the deck, running to below the waterline (or into the beach where the island
+            // has risen to meet them).
+            float postTop = DockTopY - 0.5f;
+            float postBottom = waterY - 1.5f;
+            foreach (float z in new[] { -7.8f, -3.9f, 0f, 3.9f, 7.8f })
+                foreach (float x in new[] { -3.65f, 3.65f })
+                    AddDockPost(root, wood, x, DockCenterZ + z, postTop, postBottom);
+
+            // Stair supports: pairs whose tops follow the flight down. Geometry comes from
+            // the built stairs so they track however many steps the beach needed.
+            Transform stairs = harbor.transform.Find("DockShoreStairs");
+            int count = stairs != null ? stairs.childCount : 0;
+            const float rise = 0.25f, run = 0.45f;
+            float zEdge = DockCenterZ + 8.45f;
+            foreach (int i in new[] { count / 3, (2 * count) / 3 })
+            {
+                if (i < 1 || i > count) continue;
+                float top = DockTopY - rise * i - 0.35f; // tucked under the tread
+                float z = zEdge + (i - 0.5f) * run;
+                AddDockPost(root, wood, -2.2f, z, top, postBottom);
+                AddDockPost(root, wood, 2.2f, z, top, postBottom);
+            }
+            Debug.Log("[ShipTestAreaBuilder] Dock piles added under the slab and the shore stairs.");
+        }
+
+        private static void AddDockPost(GameObject root, Material wood,
+            float x, float z, float top, float bottom)
+        {
+            var post = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            post.name = "Post";
+            post.transform.SetParent(root.transform, false);
+            post.transform.localPosition = new Vector3(x, (top + bottom) * 0.5f, z);
+            post.transform.localScale = new Vector3(0.35f, top - bottom, 0.35f);
+            post.GetComponent<MeshRenderer>().sharedMaterial = wood;
+        }
+
+        /// <summary>Wooden stair flight from the dock's landward (north) edge down onto the
+        /// island beach. Step count and landing derive from the island's analytic sand
+        /// height, iterated so the bottom tread always sits within a step of the sand —
+        /// whatever the waterline (and so the island) ended up at.</summary>
+        private static void BuildDockShoreStairs(GameObject harbor)
+        {
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0f;
+            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+
+            const float rise = 0.25f, run = 0.45f, width = 5f;
+            float zEdge = DockCenterZ + 8.45f; // dock's north face
+
+            // The landing's sand height depends on how far the stairs reach; a few
+            // fixed-point rounds settle both together.
+            int count = 8;
+            for (int i = 0; i < 4; i++)
+            {
+                float sand = waterY + IslandHeightWorld(0f, zEdge + count * run);
+                count = Mathf.Max(1, Mathf.CeilToInt((DockTopY - 0.05f - sand) / rise));
+            }
+
+            var root = new GameObject("DockShoreStairs");
+            root.transform.SetParent(harbor.transform, false);
+            for (int i = 1; i <= count; i++)
+            {
+                var step = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                step.name = $"Step{i}";
+                step.transform.SetParent(root.transform, false);
+                float top = DockTopY - rise * i;
+                step.transform.localPosition = new Vector3(
+                    0f, top - (rise + 0.05f) * 0.5f, zEdge + (i - 0.5f) * run);
+                step.transform.localScale = new Vector3(width, rise + 0.05f, run + 0.06f);
+                step.GetComponent<MeshRenderer>().sharedMaterial = wood;
+            }
+            Debug.Log($"[ShipTestAreaBuilder] Dock shore stairs: {count} steps down to the " +
+                      "island beach from the dock's north edge.");
+        }
+
+        // Deterministic dressing: (prefab, degrees from north, metres inland of the coast,
+        // yaw). Placements stay off the southern dock lobe so the approach and the beach
+        // ramp stay clear; heights come from the shared profile, sunk slightly so nothing
+        // floats on the slope.
+        private static void PlaceIslandFlora(GameObject root)
+        {
+            (string name, float a, float s, float yaw)[] flora =
+            {
+                ("SM_Env_PalmTree_01",       30f,  7f,  40f),
+                ("SM_Env_PalmTree_03",       75f,  9f, 160f),
+                ("SM_Env_PalmTree_Tall_01", 118f,  8f, 300f),
+                ("SM_Env_PalmTree_02",      252f,  7f,  10f),
+                ("SM_Env_PalmTree_Tall_02", 300f,  9f, 220f),
+                ("SM_Env_PalmBush_03",       60f, 11f,   0f),
+                ("SM_Env_Bush_01",          272f, 12f,  90f),
+                ("SM_Env_GrassPatch_01",     20f, 18f,   0f),
+                ("SM_Env_GrassPatch_02",    100f, 20f,  70f),
+                ("SM_Env_GrassPatch_03",    205f, 19f, 140f),
+                ("SM_Env_GrassPatch_01",    330f, 17f, 200f),
+                ("SM_Env_Rocks_01",          92f,  3f,   0f),
+                ("SM_Env_Rocks_02",         228f,  2f,  45f),
+                ("SM_Env_Beach_Pile_01",    140f,  4f,   0f),
+                ("SM_Env_Rock_Skull_01",      0f, 15f, 195f),
+            };
+
+            var parent = new GameObject("Flora");
+            parent.transform.SetParent(root.transform, false);
+            foreach ((string name, float aDeg, float s, float yaw) in flora)
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                    $"{SyntyRoot}/Environments/{name}.prefab");
+                if (prefab == null)
+                {
+                    Debug.LogWarning($"[ShipTestAreaBuilder] Island dressing missing: {name}");
+                    continue;
+                }
+                float a = aDeg * Mathf.Deg2Rad;
+                float r = IslandRadius(a) - s;
+                float x = Mathf.Sin(a) * r, z = Mathf.Cos(a) * r;
+                var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                go.transform.SetParent(parent.transform, false);
+                go.transform.localPosition = new Vector3(
+                    x, IslandHeightWorld(x, IslandCenterZ + z) - 0.12f, z);
+                go.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+            }
+        }
+
         private static void EnsureJettiesOnce()
         {
             if (SceneManager.GetActiveScene().path != ScenePath) return;

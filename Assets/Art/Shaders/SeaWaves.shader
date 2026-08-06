@@ -11,6 +11,7 @@ Shader "Sea/Waves"
         _DeepColor("Deep Color", Color) = (0.05, 0.22, 0.33, 1)
         _CrestColor("Crest Color", Color) = (0.72, 0.88, 0.90, 1)
         _WaveAmp("Wave Amplitude (m)", Float) = 0.35
+        _WaveTime("Wave Time (synced clock; <0 = local time)", Float) = -1
         _WaveLength("Base Wave Length (m)", Float) = 11
         _WaveSpeed("Wave Speed", Float) = 1.0
         _Choppiness("Choppiness", Range(0, 1)) = 0.5
@@ -40,6 +41,7 @@ Shader "Sea/Waves"
             half4 _DeepColor;
             half4 _CrestColor;
             float _WaveAmp;
+            float _WaveTime;
             float _WaveLength;
             float _WaveSpeed;
             float _Choppiness;
@@ -96,7 +98,9 @@ Shader "Sea/Waves"
             {
                 Varyings OUT;
                 float3 pw = TransformObjectToWorld(IN.positionOS.xyz);
-                float t = _Time.y;
+                // Synced network clock when the game drives it (all peers and the server
+                // agree where the crests are); shader-local time keeps editor previews alive.
+                float t = _WaveTime >= 0 ? _WaveTime : _Time.y;
                 float ts = t * _WaveSpeed;
 
                 float3 off = float3(0, 0, 0);

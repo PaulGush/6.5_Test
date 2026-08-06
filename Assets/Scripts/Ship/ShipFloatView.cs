@@ -45,6 +45,7 @@ namespace Game.Ship
         }
 
         private Rest[] _rest = { };
+        private ShipController _ship;
         private WaterSurface _water;
         private float _nextWaterScan;
         private float _heave, _pitch, _roll;    // oscillator state (unbounded)
@@ -63,6 +64,7 @@ namespace Game.Ship
 
         private void Awake()
         {
+            _ship = GetComponent<ShipController>();
             _rest = new Rest[targets.Length];
             for (int i = 0; i < targets.Length; i++)
                 if (targets[i] != null)
@@ -88,19 +90,33 @@ namespace Game.Ship
             float heaveT = 0f, pitchT = 0f, rollT = 0f;
             if (_water != null)
             {
-                Vector3 bow = transform.TransformPoint(0f, 0f, sampleHalfLength);
-                Vector3 stern = transform.TransformPoint(0f, 0f, -sampleHalfLength);
-                Vector3 port = transform.TransformPoint(-sampleHalfBeam, 0f, 0f);
-                Vector3 star = transform.TransformPoint(sampleHalfBeam, 0f, 0f);
-                float hBow = _water.HeightAt(bow.x, bow.z);
-                float hStern = _water.HeightAt(stern.x, stern.z);
-                float hPort = _water.HeightAt(port.x, port.z);
-                float hStar = _water.HeightAt(star.x, star.z);
-
-                float mean = _water.SurfaceY;
-                heaveT = (hBow + hStern + hPort + hStar) * 0.25f - mean;
-                pitchT = Mathf.Atan2(hStern - hBow, sampleHalfLength * 2f) * Mathf.Rad2Deg;
-                rollT = Mathf.Atan2(hStar - hPort, sampleHalfBeam * 2f) * Mathf.Rad2Deg;
+                // Least-squares plane over stations along the hull, not two extreme points:
+                // waves shorter than the bow-to-stern spacing alias into arbitrary —
+                // sometimes inverted — tilt, while the station grid averages them out, so
+                // the ship rocks in the true direction of the swell (bow seas pitch it,
+                // beam seas roll it, quartering seas corkscrew).
+                const int stations = 5;
+                float zExtent = sampleHalfLength * 0.55f;
+                float sumH = 0f, sumZH = 0f, sumXH = 0f, sumZZ = 0f, sumXX = 0f;
+                for (int zi = 0; zi < stations; zi++)
+                {
+                    float z = Mathf.Lerp(-zExtent, zExtent, zi / (stations - 1f));
+                    for (int side = -1; side <= 1; side += 2)
+                    {
+                        float x = sampleHalfBeam * side;
+                        Vector3 p = transform.TransformPoint(x, 0f, z);
+                        float h = _water.HeightAt(p.x, p.z) - _water.SurfaceY;
+                        sumH += h;
+                        sumZH += z * h; sumZZ += z * z;
+                        sumXH += x * h; sumXX += x * x;
+                    }
+                }
+                // The PHYSICAL hull already rides the wave mean (ShipController's heave);
+                // the visual layer only adds the residual — which also papers over sync
+                // interpolation lag on clients.
+                heaveT = sumH / (stations * 2) - (_ship != null ? _ship.HeaveOffset : 0f);
+                pitchT = -Mathf.Atan(sumZH / sumZZ) * Mathf.Rad2Deg; // stern riding high = bow down
+                rollT = Mathf.Atan(sumXH / sumXX) * Mathf.Rad2Deg;   // starboard riding high = starboard up
             }
 
             // Damped oscillator per axis, forced by the water plane: each wave shoulders

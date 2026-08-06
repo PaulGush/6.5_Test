@@ -10,21 +10,44 @@ namespace Game.Gameplay
     /// so visuals like the ship's buoyancy can ride the same waves the player sees. The
     /// shader's camera-distance detail fade is deliberately not applied — it is a rendering
     /// optimisation, not part of the sea state.
+    ///
+    /// The wave clock is Mirror's synced network time, pushed into the shader every frame:
+    /// the server's physics and every client's visuals agree where the crests are, which is
+    /// what lets the ship REALLY ride the waves rather than only appearing to. Offline,
+    /// network time is local time, so nothing changes in solo play.
     /// </summary>
     public class WaterSurface : MonoBehaviour
     {
         private Material _mat;
         private bool _cached;
         private float _amp, _len, _speed, _noiseAmp, _noiseScale;
+        private MaterialPropertyBlock _mpb;
+        private Renderer _renderer;
+        private static readonly int WaveTimeId = Shader.PropertyToID("_WaveTime");
+
+        /// <summary>The shared wave clock (seconds). Synced across all peers by Mirror.</summary>
+        public static float WaveTime => (float)Mirror.NetworkTime.time;
 
         /// <summary>The mean surface height (the flat plane the waves oscillate around).</summary>
         public float SurfaceY => transform.position.y;
+
+        private void Update()
+        {
+            if (_renderer == null)
+            {
+                _renderer = GetComponent<Renderer>();
+                if (_renderer == null) return;
+                _mpb = new MaterialPropertyBlock();
+            }
+            _mpb.SetFloat(WaveTimeId, WaveTime);
+            _renderer.SetPropertyBlock(_mpb);
+        }
 
         /// <summary>World-space height of the animated surface at (x, z).</summary>
         public float HeightAt(float x, float z)
         {
             if (!CacheParams()) return SurfaceY;
-            float t = Time.timeSinceLevelLoad; // matches the shader's _Time.y
+            float t = WaveTime; // the same synced clock the shader renders with
             float ts = t * _speed;
 
             // Mirror of the Sea/Waves vertex stage (height terms only; horizontal chop

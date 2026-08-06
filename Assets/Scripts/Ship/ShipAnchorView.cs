@@ -3,13 +3,15 @@ using UnityEngine;
 namespace Game.Ship
 {
     /// <summary>
-    /// Purely visual: rides the anchor prop up and down the hull side as the ship's anchored
-    /// state changes, and simulates the rope it hangs from. The prefab carries a plain
-    /// stretched cylinder for the rope (so the stowed pose reads in the editor); at runtime
-    /// it is swapped for a verlet-simulated LineRenderer pinned to the cathead's tip and the
-    /// anchor's ring, so the line sags and sways with the ship's motion instead of staying
-    /// rigid. Driven off the synced <see cref="ShipController"/> state, so it needs no
-    /// network traffic of its own and stays correct on every client.
+    /// Purely visual: the anchor hangs from the cathead as a pendulum on a taut rope. The
+    /// ship's anchored state only pays rope out and winds it back in; where the anchor IS
+    /// is a verlet bob swinging from the cathead's tip on that much rope — so it sways with
+    /// the deck rock, trails the ship's acceleration, and the prop tilts along the rope,
+    /// visibly attached to its end. The sea damps the swing hard once the anchor submerges.
+    /// The rope itself is a verlet-simulated LineRenderer pinned to the cathead and the
+    /// swinging ring (the prefab's stretched cylinder only serves the editor pose). Driven
+    /// off the synced <see cref="ShipController"/> state, so it needs no network traffic of
+    /// its own and stays correct on every client.
     /// </summary>
     public class ShipAnchorView : MonoBehaviour
     {
@@ -35,7 +37,8 @@ namespace Game.Ship
         [SerializeField] private Transform rope;
         [Tooltip("Fixed point the rope pays out from (the cathead's tip, a sibling of the anchor).")]
         [SerializeField] private Transform ropeTop;
-        [Tooltip("The anchor ring's height above the prop's pivot (m) — where the rope ties on.")]
+        [Tooltip("Fallback ring height above the prop's pivot (m). Normally the tie-on point " +
+                 "is measured from the prop's meshes: the top of the anchor.")]
         [SerializeField] private float ringOffset = 0.75f;
         [Tooltip("Simulated rope points; more = smoother curve.")]
         [SerializeField] private int ropeSegments = 12;
@@ -44,6 +47,13 @@ namespace Game.Ship
         [SerializeField] private float ropeWidth = 0.08f;
         [Tooltip("Fraction of point velocity kept per step; lower settles the swing faster.")]
         [SerializeField] private float ropeDamping = 0.96f;
+        [Tooltip("Fraction of swing velocity the hanging anchor keeps per step (in air). " +
+                 "Keep high: air drag on an anchor is nothing.")]
+        [SerializeField] private float swingDamping = 0.995f;
+        [Tooltip("Swing damping once the anchor is underwater — the splash brakes it hard.")]
+        [SerializeField] private float swingDampingWet = 0.9f;
+        [Tooltip("Gravity multiplier on the falling anchor. Above 1 reads as real mass at game scale.")]
+        [SerializeField] private float fallGravityScale = 1.8f;
 
         // While the just-spawned state settles (scene load, auto-moor's first scan, a late
         // join's SyncVars), state changes are initial state — the anchor snaps to its pose
@@ -51,6 +61,12 @@ namespace Game.Ship
         private const float SpawnSnapSeconds = 1.5f;
 
         private Vector3 _stowed;
+        private Vector3 _animLocal;        // rigid payout animation: where the rig carries the anchor
+        private Quaternion _stowedRot;     // anchor's authored local rotation
+        private Vector3 _ringLocal;        // ring offset in the anchor's own frame
+        private Vector3 _bob, _bobPrev;    // world-space pendulum bob (the anchor's ring)
+        private bool _ropeLoaded = true;   // is the anchor's weight on the rope right now?
+        private float _slackNow;           // current rope sag multiplier, eased toward load state
         private LineRenderer _line;
         private Vector3[] _points, _prev; // world-space verlet points
         private Game.Gameplay.WaterSurface _water;
@@ -66,7 +82,13 @@ namespace Game.Ship
         private void Awake()
         {
             if (ship == null) ship = GetComponentInParent<ShipController>();
-            if (anchor != null) _stowed = anchor.localPosition;
+            if (anchor != null)
+            {
+                _stowed = _animLocal = anchor.localPosition;
+                _stowedRot = anchor.localRotation;
+                _ringLocal = MeasureRingLocal();
+                _bob = _bobPrev = anchor.TransformPoint(_ringLocal);
+            }
             _snapUntil = Time.time + SpawnSnapSeconds;
             BuildRopeLine();
         }
@@ -86,29 +108,97 @@ namespace Game.Ship
             Vector3 target = down ? _stowed + Vector3.down * drop : _stowed;
             if (Time.time < _snapUntil)
             {
-                if ((anchor.localPosition - target).sqrMagnitude > 1e-4f) SnapTo(target);
+                if ((_animLocal - target).sqrMagnitude > 1e-4f) SnapTo(target);
             }
             else
             {
                 float speed = down ? dropSpeed : drop / Mathf.Max(0.1f, hoistSeconds);
-                anchor.localPosition =
-                    Vector3.MoveTowards(anchor.localPosition, target, speed * Time.deltaTime);
+                _animLocal = Vector3.MoveTowards(_animLocal, target, speed * Time.deltaTime);
             }
 
+            // How much rope the anchor may take: on a drop the windlass free-runs — the
+            // whole scope is available at once, so the anchor genuinely FALLS and the rope
+            // streams out after it until the scope arrests it. Stowed and hoisting, the
+            // rig animation meters the length (wind-in drags the bob back up).
             // Clamp the step so a hitch doesn't explode the verlet integration.
-            if (_line != null) SimulateRope(Mathf.Min(Time.deltaTime, 1f / 30f));
+            float dt = Mathf.Min(Time.deltaTime, 1f / 30f);
+            Vector3 top = ropeTop.position;
+            float ropeLen = down && Time.time >= _snapUntil
+                ? Vector3.Distance(top,
+                    transform.TransformPoint(target) + Vector3.up * _ringLocal.magnitude)
+                : Vector3.Distance(top, CarriedRingWorld());
+            bool wet = !float.IsNaN(surfaceY) && _bob.y < surfaceY;
+            SimulateSwing(dt, top, ropeLen, wet);
+
+            // Hang the prop off the bob: ring at the rope's end, body tilted along the rope.
+            Vector3 ropeDir = top - _bob;
+            Quaternion tilt = ropeDir.sqrMagnitude > 1e-6f
+                ? Quaternion.FromToRotation(Vector3.up, ropeDir.normalized)
+                : Quaternion.identity;
+            anchor.rotation = tilt * transform.rotation * _stowedRot;
+            anchor.position = _bob - anchor.rotation * _ringLocal;
+
+            if (_line != null) SimulateRope(dt);
         }
 
-        // Jump straight to a pose (initial state, not an event): place the anchor, re-seed
-        // the rope between the pins and run the sim ahead so it starts already sagging at
-        // rest instead of visibly falling into shape.
+        // Where the rigid payout animation carries the ring — defines the rope length only.
+        private Vector3 CarriedRingWorld() =>
+            transform.TransformPoint(_animLocal) + Vector3.up * _ringLocal.magnitude;
+
+        // Where the rope ties on: the TOP of the anchor prop, measured from its meshes in
+        // the anchor's own frame (the authored pose is upright at Awake, so world bounds
+        // convert exactly). The serialized ringOffset only covers a prop with no renderers.
+        private Vector3 MeasureRingLocal()
+        {
+            Renderer[] rs = anchor.GetComponentsInChildren<Renderer>();
+            if (rs.Length == 0) return Vector3.up * ringOffset;
+            bool has = false;
+            Bounds local = default;
+            foreach (Renderer r in rs)
+            {
+                Bounds w = r.bounds;
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 corner = new Vector3(
+                        (i & 1) == 0 ? w.min.x : w.max.x,
+                        (i & 2) == 0 ? w.min.y : w.max.y,
+                        (i & 4) == 0 ? w.min.z : w.max.z);
+                    Vector3 p = anchor.InverseTransformPoint(corner);
+                    if (!has) { local = new Bounds(p, Vector3.zero); has = true; }
+                    else local.Encapsulate(p);
+                }
+            }
+            return new Vector3(local.center.x, local.max.y, local.center.z);
+        }
+
+        // Pendulum on a real rope: integrate the bob under (heavy) gravity; the rope only
+        // acts when it loads up — inside the scope the anchor is in free fall and the line
+        // is slack, at the scope's edge it arrests the fall and carries the weight. The
+        // pivot riding the rocking deck (and the ship's own motion) feeds the swing.
+        private void SimulateSwing(float dt, Vector3 top, float len, bool wet)
+        {
+            float damping = wet ? swingDampingWet : swingDamping;
+            Vector3 p = _bob;
+            _bob += (_bob - _bobPrev) * damping + Physics.gravity * (fallGravityScale * dt * dt);
+            _bobPrev = p;
+
+            Vector3 d = _bob - top;
+            float dist = d.magnitude;
+            _ropeLoaded = dist >= len - 0.05f;
+            if (dist > len) _bob = top + d * (len / dist);
+        }
+
+        // Jump straight to a pose (initial state, not an event): park the payout, hang the
+        // bob at rest directly below the cathead, re-seed the rope between the pins and run
+        // the sim ahead so everything starts settled instead of visibly falling into shape.
         private void SnapTo(Vector3 targetLocal)
         {
-            anchor.localPosition = targetLocal;
+            _animLocal = targetLocal;
+            Vector3 top = ropeTop.position;
+            _bob = _bobPrev = top + Vector3.down * Vector3.Distance(top, CarriedRingWorld());
             if (_line == null) return;
-            Vector3 top = ropeTop.position, ring = RingWorld();
             for (int i = 0; i < _points.Length; i++)
-                _points[i] = _prev[i] = Vector3.Lerp(top, ring, i / (_points.Length - 1f));
+                _points[i] = _prev[i] = Vector3.Lerp(top, _bob, i / (_points.Length - 1f));
             for (int k = 0; k < 90; k++) SimulateRope(1f / 60f);
         }
 
@@ -122,8 +212,6 @@ namespace Game.Ship
             }
             return _water != null ? _water.SurfaceY : float.NaN;
         }
-
-        private Vector3 RingWorld() => anchor.position + Vector3.up * ringOffset;
 
         // Swap the editor's rigid cylinder for a world-space line the sim can bend.
         private void BuildRopeLine()
@@ -144,19 +232,23 @@ namespace Game.Ship
 
             _points = new Vector3[ropeSegments];
             _prev = new Vector3[ropeSegments];
-            Vector3 top = ropeTop.position, ring = RingWorld();
+            Vector3 top = ropeTop.position;
             for (int i = 0; i < ropeSegments; i++)
-                _points[i] = _prev[i] = Vector3.Lerp(top, ring, i / (ropeSegments - 1f));
+                _points[i] = _prev[i] = Vector3.Lerp(top, _bob, i / (ropeSegments - 1f));
         }
 
         // Classic verlet rope: integrate the free points, pin the ends to the cathead and
-        // the ring, then relax segment lengths a few rounds. The rest length follows the
-        // pin distance, so the rope pays out with the anchor and winds back on the haul.
+        // the swinging ring, then relax segment lengths a few rounds. The rest length
+        // follows the pin distance, so the rope pays out and winds back with the bob.
         private void SimulateRope(float dt)
         {
             int n = _points.Length;
-            Vector3 top = ropeTop.position, ring = RingWorld();
-            float rest = Vector3.Distance(top, ring) * ropeSlack / (n - 1);
+            Vector3 top = ropeTop.position, ring = _bob;
+            // Sag follows tension: loaded (hanging, hauling, the arrest) the line is bar-
+            // taut; slack (free fall, a heave of the deck) it bellies out and streams.
+            _slackNow = Mathf.Lerp(_slackNow <= 0f ? ropeSlack : _slackNow,
+                _ropeLoaded ? 1.0f : ropeSlack, 1f - Mathf.Exp(-8f * dt));
+            float rest = Vector3.Distance(top, ring) * _slackNow / (n - 1);
 
             for (int i = 1; i < n - 1; i++)
             {
