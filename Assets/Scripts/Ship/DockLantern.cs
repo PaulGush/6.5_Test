@@ -4,10 +4,12 @@ namespace Game.Ship
 {
     /// <summary>
     /// A jetty's signal lantern, there so sailors can pick the dock out at a distance.
-    /// In Auto mode it decides once at load whether this spot lies in shade — a ray from
-    /// the lamp toward the main directional light — so lanterns light themselves in the
-    /// dark parts of the map and stay unlit in open sun. Lit/Unlit force the state for
-    /// hand-authored placements. Purely visual and client-local: no networking.
+    /// In Auto mode it lights itself when its spot lies in shade (a ray from the lamp
+    /// toward the main directional light, decided once at load) — and every Auto lantern
+    /// lights at nightfall and snuffs at dawn, following the scene's
+    /// <see cref="Game.Gameplay.DayNightCycle"/>. Lit/Unlit force the state for
+    /// hand-authored placements. Purely visual and client-local: no networking — the
+    /// day/night clock itself is already synced.
     /// </summary>
     public class DockLantern : MonoBehaviour
     {
@@ -27,13 +29,26 @@ namespace Game.Ship
             glow = glowRef;
         }
 
-        private void Start() => Apply(ShouldBeLit());
+        private bool _autoShade; // decided once at load: does this spot sit in shade by day?
 
-        private bool ShouldBeLit()
+        private void Start()
         {
-            if (mode == LanternMode.Lit) return true;
-            if (mode == LanternMode.Unlit) return false;
+            _autoShade = mode == LanternMode.Auto && InShade();
+            Refresh();
+            // Nightfall is slow; a gentle poll keeps every Auto lantern in step with dusk.
+            InvokeRepeating(nameof(Refresh), 4f, 4f);
+        }
 
+        private void Refresh()
+        {
+            var cycle = Game.Gameplay.DayNightCycle.Active;
+            bool night = cycle != null && cycle.IsNight;
+            Apply(mode == LanternMode.Lit
+                  || (mode == LanternMode.Auto && (_autoShade || night)));
+        }
+
+        private bool InShade()
+        {
             Light sun = FindSun();
             if (sun == null) return true; // no sun at all: a dark map, light up
 

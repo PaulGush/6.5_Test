@@ -40,13 +40,13 @@ namespace Game.EditorTools
 
         private const string WaterMatPath = "Assets/Art/Materials/Sea_Water.mat";
         private const string SeaMeshPath = "Assets/Art/Models/SeaGrid.asset";
-        private const string SeaMeshName = "SeaDisc2"; // bump when the sea mesh layout changes
+        private const string SeaMeshName = "SeaDisc4"; // bump when the sea mesh layout changes
         private const string SeaShaderName = "Sea/Waves";
         private const string WoodMatPath = "Assets/Art/Materials/Sea_DockWood.mat";
         private const string RopeMatPath = "Assets/Art/Materials/Sea_Rope.mat";
         private const string SandMatPath = "Assets/Art/Materials/Sea_Sand.mat";
         private const string IslandMeshPath = "Assets/Art/Models/StartIsland.asset";
-        private const string IslandMeshName = "StartIsland1"; // bump when the island layout changes
+        private const string IslandMeshName = "StartIsland2"; // bump when the island layout changes
 
         // Bump when generated-collider logic changes: prefabs carrying an older tag are rebuilt
         // and re-moored by the auto-maintenance pass.
@@ -151,19 +151,7 @@ namespace Game.EditorTools
             EditorApplication.delayCall += () =>
             {
                 if (EditorApplication.isPlayingOrWillChangePlaymode) return;
-                AddHelmPromptRows(logIfPresent: false);
-                PatchShipPrefabPhysics();
-                MoveRestartButtonToCorner();
-                RebuildDockOnce();
-                EnsureWarshipOnce();
-                EnsureCurrentBuildOnce();
-                EnsureRiggingClimbOnce();
-                EnsureNoNestJumpPadsOnce();
-                EnsureSailStationsOnce();
                 EnsureAnchorStationOnce();
-                EnsureAnchorRopeOnce();
-                EnsureAnchorOutboardOnce();
-                EnsureAnchorDepthOnce();
                 EnsureShipFloatOnce();
                 EnsureFloatDynamicsOnce();
                 EnsurePlayerRockOnce();
@@ -171,15 +159,15 @@ namespace Game.EditorTools
                 EnsureCameraSwayOnce();
                 EnsureWaterSurfaceOnce();
                 EnsureSeaWavesOnce();
-                EnsureCourseHiddenOnce();
-                EnsureDockAtOriginOnce();
+                EnsureSeaFollowOnce();
                 EnsureJettiesOnce();
                 EnsureStartIslandOnce();
                 EnsureDockShoreStairsOnce();
                 EnsureDockPilesOnce();
-                EnsureBerthZonesOnce();
-                AddStationPromptRow(logIfPresent: false);
-                AddShipStatusRow(logIfPresent: false);
+                EnsureArchipelagoOnce();
+                EnsureShipMoored();
+                EnsureDayNightOnce();
+                EnsureSkyOnce();
                 EnsurePlayerPhysicsIsolation();
             };
         }
@@ -205,15 +193,6 @@ namespace Game.EditorTools
 
         [MenuItem("Tools/Ship/Use Large Ship In Harbor")]
         public static void UseLargeShip() => SwapHarborShip(LargeSpec);
-
-        // First compile after the swap feature lands: put the warship in (the current test focus).
-        private static void EnsureWarshipOnce()
-        {
-            if (File.Exists(WarshipPrefabPath)) return;
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            if (GameObject.Find("Harbor") == null) return;
-            SwapHarborShip(WarshipSpec);
-        }
 
         /// <summary>Rebuilds the spec's prefab from the Synty meshes and replaces the ship moored
         /// in the Harbor, re-deriving the mooring pose from the new hull's measurements.</summary>
@@ -830,75 +809,6 @@ namespace Game.EditorTools
             soShip.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        /// <summary>
-        /// In-place migration: adds per-mast sail stations to an existing ship prefab (which
-        /// predates them) WITHOUT rebuilding it, so hand-adjusted colliders survive. Mast
-        /// positions come from the meshes; marker heights from the existing Deck strip boxes.
-        /// </summary>
-        [MenuItem("Tools/Ship/Add Sail Stations To Moored Ship")]
-        public static void AddSailStationsMenu()
-        {
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
-                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabSailStations(spec);
-        }
-
-        private static void PatchPrefabSailStations(ShipSpec spec)
-        {
-            string path = PrefabPathFor(spec);
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (asset == null || asset.GetComponent<ShipSailStation>() != null) return;
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                var ship = contents.GetComponent<ShipController>();
-                GameObject hull = null;
-                foreach (Transform child in contents.transform)
-                    if (child.name.Contains("Hull")) { hull = child.gameObject; break; }
-                if (ship == null || hull == null)
-                {
-                    Debug.LogWarning($"[ShipTestAreaBuilder] {path}: no ShipController/hull found; sail stations not added.");
-                    return;
-                }
-
-                List<MastColumn> masts = CollectMasts(contents, hull);
-                var deckBoxes = contents.GetComponentsInChildren<BoxCollider>(true)
-                    .Where(b => b.name == "Deck").ToList();
-                float DeckYAt(Vector3 pos) => deckBoxes.Count > 0
-                    ? deckBoxes.OrderBy(b => Mathf.Abs(b.center.z - pos.z))
-                        .Select(b => b.center.y + b.size.y * 0.5f).First()
-                    : pos.y;
-
-                CreateSailStations(contents, ship, spec, hull, masts, DeckYAt);
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: added {contents.GetComponents<ShipSailStation>().Length} " +
-                          "sail station(s). Hand-adjusted colliders untouched.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
-        /// <summary>
-        /// In-place migration: adds the bow anchor station to an existing ship prefab WITHOUT
-        /// rebuilding it, so hand-adjusted colliders survive. Placement comes from the prefab's
-        /// own Deck strip colliders: the raised forecastle strip near the bow, port side, with
-        /// the Synty anchor prop hung on the hull below the rail.
-        /// </summary>
-        [MenuItem("Tools/Ship/Add Anchor Station To Moored Ship")]
-        public static void AddAnchorStationMenu()
-        {
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
-                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabAnchorStation(spec);
-        }
-
         private static void PatchPrefabAnchorStation(ShipSpec spec)
         {
             string path = PrefabPathFor(spec);
@@ -1034,119 +944,10 @@ namespace Game.EditorTools
             view.SetRope(rope.transform, top.transform);
         }
 
-        /// <summary>In-place migration for prefabs whose anchor station predates the rigging:
-        /// hang the existing anchor prop from a cathead + rope.</summary>
-        [MenuItem("Tools/Ship/Add Anchor Rigging To Moored Ship")]
-        public static void AddAnchorRiggingMenu()
-        {
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
-                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabAnchorRope(spec);
-        }
-
-        private static void PatchPrefabAnchorRope(ShipSpec spec)
-        {
-            string path = PrefabPathFor(spec);
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            var assetView = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
-            if (assetView == null) return; // no station yet — the station patch brings its own rigging
-            if (assetView.transform.Find("AnchorRope") != null) return; // already rigged
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                var view = contents.GetComponentInChildren<ShipAnchorView>(true);
-                Transform anchor = view != null ? view.transform.Find("AnchorProp") : null;
-                BoxCollider fore = ForecastleDeck(contents);
-                if (view == null || anchor == null || fore == null)
-                {
-                    Debug.LogWarning($"[ShipTestAreaBuilder] {path}: anchor station incomplete; " +
-                                     "rigging not added.");
-                    return;
-                }
-                AddAnchorRigging(view.gameObject, view, anchor,
-                    fore.center.y + fore.size.y * 0.5f, fore.size.x * 0.5f);
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor now hangs from a cathead + rope. " +
-                          "Hand-adjusted colliders untouched.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
-        /// <summary>In-place fix: rebuilds the generated AnchorStation subtree when its prop
-        /// sits inside the hull (the first placement keyed off the narrow forecastle deck
-        /// strip instead of the hull's real beam). Everything under AnchorStation is
-        /// builder-generated, so it is safe to delete and recreate; colliders elsewhere
-        /// are untouched.</summary>
-        [MenuItem("Tools/Ship/Reposition Anchor Station Outboard")]
-        public static void RepositionAnchorStationMenu()
-        {
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
-                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabAnchorReposition(spec);
-        }
-
-        private static void PatchPrefabAnchorReposition(ShipSpec spec)
-        {
-            string path = PrefabPathFor(spec);
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            var view = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
-            Transform anchor = view != null ? view.transform.Find("AnchorProp") : null;
-            BoxCollider hull = asset != null ? asset.GetComponentsInChildren<BoxCollider>(true)
-                .FirstOrDefault(b => b.name == "Hull" && !b.isTrigger) : null;
-            if (anchor == null || hull == null) return;
-            if (Mathf.Abs(anchor.localPosition.x) > hull.size.x * 0.5f) return; // already outboard
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                var stale = contents.GetComponentInChildren<ShipAnchorView>(true);
-                if (stale != null) Object.DestroyImmediate(stale.gameObject);
-                if (!CreateAnchorStation(contents, path)) return;
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor station rebuilt outboard of the " +
-                          "hull planking. Hand-adjusted colliders untouched.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
         // One-shot (EditorPrefs-keyed, so re-enabling by hand sticks): the sailing slice
         // doesn't need the parkour course or its run clock — deactivate the course root and
         // the run HUD canvas. Inactive scene NetworkIdentities simply don't spawn, and the
         // RunManager stays alive (harmless, and NetworkPlayer references it).
-        private const string CourseHiddenKey = "ShipTestAreaBuilder.CourseHidden.v1";
-
-        private static void EnsureCourseHiddenOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            if (EditorPrefs.GetBool(CourseHiddenKey, false)) return;
-
-            bool changed = false;
-            foreach (string name in new[] { "CourseV2", "RunHUD" })
-            {
-                GameObject go = GameObject.Find(name); // active objects only, which is the point
-                if (go == null) continue;
-                go.SetActive(false);
-                changed = true;
-            }
-            EditorPrefs.SetBool(CourseHiddenKey, true);
-            if (!changed) return;
-            Scene scene = SceneManager.GetActiveScene();
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] Obstacle course + run clock HUD deactivated " +
-                      "(re-enable CourseV2/RunHUD in the hierarchy to bring them back).");
-        }
 
         // Maintenance: swap the harbor's flat default plane for a dense grid running the
         // Sea/Waves shader, so the water actually moves. Idempotent: skips once the Water
@@ -1202,7 +1003,9 @@ namespace Game.EditorTools
         private static Mesh BuildSeaGridMesh()
         {
             const int Sectors = 320;
-            const float DenseStep = 2.2f; // uniform ring spacing over the playable sea
+            const float DenseStep = 2.2f; // uniform ring spacing around the viewer
+            // The mesh FOLLOWS the camera (SeaFollowView), so the dense region only needs
+            // to reach the shader's detail-fade distance — the ocean itself is unbounded.
             const float DenseReach = 180f;
             const float Growth = 1.05f;   // then ring step ~5% of radius: aspect stays ~1
             const float Reach = 2500f;
@@ -1251,6 +1054,21 @@ namespace Game.EditorTools
             Directory.CreateDirectory(Path.GetDirectoryName(SeaMeshPath));
             AssetDatabase.CreateAsset(mesh, SeaMeshPath);
             return mesh;
+        }
+
+        // Maintenance: the sea mesh follows the camera once (world-space waves make the
+        // slide invisible), so the ocean stays finely tessellated wherever the player is.
+        private static void EnsureSeaFollowOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform water = harbor != null ? harbor.transform.Find("Water") : null;
+            if (water == null || water.GetComponent<SeaFollowView>() != null) return;
+            water.gameObject.AddComponent<SeaFollowView>();
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Sea mesh now follows the camera (SeaFollowView).");
         }
 
         // Maintenance: mark the existing scene's water plane with WaterSurface once, so the
@@ -1452,74 +1270,6 @@ namespace Game.EditorTools
             PatchPrefabShipFloat(spec);
         }
 
-        // Maintenance: deepen an existing station's drop so the anchor actually submerges
-        // (the first version guessed a distance that left it at the surface). Only ever
-        // increases the value, so a deeper hand-tuned drop is left alone.
-        private static void EnsureAnchorDepthOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            string path = PrefabPathFor(spec);
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            var assetView = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
-            Transform anchor = assetView != null ? assetView.transform.Find("AnchorProp") : null;
-            if (anchor == null) return;
-
-            float needed = AnchorDropDistanceFor(anchor.localPosition.y);
-            var soAsset = new SerializedObject(assetView);
-            if (soAsset.FindProperty("dropDistance").floatValue >= needed - 0.05f) return;
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                var view = contents.GetComponentInChildren<ShipAnchorView>(true);
-                if (view == null) return;
-                var so = new SerializedObject(view);
-                so.FindProperty("dropDistance").floatValue = needed;
-                so.ApplyModifiedPropertiesWithoutUndo();
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor drop deepened to {needed:F1} m " +
-                          "so it submerges below the harbor waterline.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
-        // Maintenance: move an inboard-hung anchor station outside the planking once.
-        private static void EnsureAnchorOutboardOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabAnchorReposition(spec);
-        }
-
-        // Maintenance: hang an already-patched anchor station's prop from its rigging once.
-        private static void EnsureAnchorRopeOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabAnchorRope(spec);
-        }
-
         // Maintenance: give the moored ship's prefab its bow anchor station once.
         private static void EnsureAnchorStationOnce()
         {
@@ -1613,11 +1363,6 @@ namespace Game.EditorTools
             return -1;
         }
 
-        /// <summary>In-place: kinematic-isolate the moored ship's prefab and put the player on
-        /// its own layer, so player physics can't move the ship at all.</summary>
-        [MenuItem("Tools/Ship/Isolate Player Physics From Ship")]
-        public static void IsolatePlayerPhysicsMenu() => EnsurePlayerPhysicsIsolation(force: true);
-
         private static void EnsurePlayerPhysicsIsolation(bool force = false)
         {
             if (!force && SceneManager.GetActiveScene().path != ScenePath) return;
@@ -1671,20 +1416,6 @@ namespace Game.EditorTools
             {
                 PrefabUtility.UnloadPrefabContents(contents);
             }
-        }
-
-        // Maintenance: give the moored ship's prefab sail stations once.
-        private static void EnsureSailStationsOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabSailStations(spec);
         }
 
         // The dressed Synty variants include a ship's wheel child; use it in place. Fallback for
@@ -1841,132 +1572,6 @@ namespace Game.EditorTools
                 box.size = new Vector3(1.1f, d.magnitude + 0.6f, 1.2f);
                 go.AddComponent<Ladder>();
             }
-        }
-
-        /// <summary>
-        /// In-place migration of an existing ship prefab: removes the built wooden NestLadders
-        /// and adds rigging climb volumes instead. Deliberately NOT a rebuild — it preserves any
-        /// hand-adjusted colliders in the prefab. Probing runs on a temporary scene instance
-        /// (prefab-contents previews have no physics scene to raycast against).
-        /// </summary>
-        [MenuItem("Tools/Ship/Replace Nest Ladders With Rigging Climb")]
-        public static void ReplaceLaddersWithRiggingMenu()
-        {
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
-                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            PatchPrefabRiggingClimb(PrefabPathFor(spec));
-        }
-
-        private static void PatchPrefabRiggingClimb(string path)
-        {
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (prefab == null) return;
-
-            List<ClimbLine> lines;
-            var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
-            try
-            {
-                instance.transform.position = new Vector3(0f, 500f, 0f);
-                Physics.SyncTransforms();
-                List<Vector3> nests = instance.GetComponentsInChildren<BoxCollider>(true)
-                    .Where(b => b.name == "CrowsNest")
-                    .Select(b => b.center + new Vector3(0f, 0.15f, 0f)) // box top = nest floor
-                    .ToList();
-                lines = ProbeRiggingClimbs(instance, nests);
-            }
-            finally
-            {
-                Object.DestroyImmediate(instance);
-            }
-            if (lines.Count == 0)
-            {
-                Debug.LogWarning($"[ShipTestAreaBuilder] No rigging lines found on {path}; ladders left in place.");
-                return;
-            }
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                foreach (Transform t in contents.GetComponentsInChildren<Transform>(true)
-                             .Where(t => t.name == "NestLadder").ToArray())
-                    Object.DestroyImmediate(t.gameObject);
-                BuildRiggingClimbVolumes(contents, lines);
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: removed wooden ladders, added {lines.Count} rigging climb volume(s). " +
-                          "Hand-adjusted colliders untouched.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
-        // Maintenance: run the ladder→rigging migration once on the moored ship's prefab.
-        private static void EnsureRiggingClimbOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPathFor(spec));
-            if (asset == null || FindDeep(asset.transform, "NestLadder") == null) return;
-            PatchPrefabRiggingClimb(PrefabPathFor(spec));
-        }
-
-        /// <summary>In-place removal of the nest jump pads from a ship prefab (rigging climbs
-        /// are the way up now). Not a rebuild — hand-adjusted colliders stay untouched.</summary>
-        [MenuItem("Tools/Ship/Remove Nest Jump Pads")]
-        public static void RemoveNestJumpPadsMenu()
-        {
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            ShipSpec spec = current != null && current.name.Contains("Medium") ? MediumSpec
-                          : current != null && current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            RemoveNestJumpPads(PrefabPathFor(spec));
-        }
-
-        private static void RemoveNestJumpPads(string path)
-        {
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (asset == null || FindDeep(asset.transform, "NestJumpPad") == null) return;
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                int removed = 0;
-                foreach (Transform t in contents.GetComponentsInChildren<Transform>(true)
-                             .Where(t => t.name == "NestJumpPad").ToArray())
-                {
-                    Object.DestroyImmediate(t.gameObject);
-                    removed++;
-                }
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: removed {removed} nest jump pad(s).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
-        // Maintenance: strip nest jump pads from the moored ship's prefab once.
-        private static void EnsureNoNestJumpPadsOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            RemoveNestJumpPads(PrefabPathFor(spec));
         }
 
         // ---------------------------------------------------------------- player prefab
@@ -2155,106 +1760,6 @@ namespace Game.EditorTools
             Debug.Log($"[ShipTestAreaBuilder] Waterline set to y={waterY:F2} for {spec.prefabName}.");
         }
 
-        // Scene migration: slide the home dock cluster to the origin (the spawn points sit
-        // there, and with the shore course hidden the dock is the spawn floor). The moored
-        // ship, gangway, checkpoint and HomeMooring jetty all translate as one unit, so
-        // every relative pose — boarding plank, berth volume, mooring — is preserved. The
-        // shore steps are removed (there is no shore) and the drown hazard grows to cover
-        // the open water around the new dock. Idempotent via the dock's position.
-        private static void EnsureDockAtOriginOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            Transform dock = harbor != null ? harbor.transform.Find("Dock") : null;
-            if (dock == null) return;
-            if (Mathf.Abs(dock.position.z - DockCenterZ) < 0.05f) return; // already home
-
-            // The ship shifts east by however much the dock edge moved when it widened.
-            float edgeDelta = DockEdgeX - dock.localScale.x * 0.5f;
-            var slide = new Vector3(0f, 0f, DockCenterZ - dock.position.z);
-            Vector3 shipSlide = slide + new Vector3(edgeDelta, 0f, 0f);
-
-            dock.position = new Vector3(0f, dock.position.y, DockCenterZ);
-            dock.localScale = new Vector3(DockEdgeX * 2f, dock.localScale.y, dock.localScale.z);
-
-            foreach (string name in new[] { "DockStep1", "DockStep2", "DockStep3" })
-            {
-                Transform t = harbor.transform.Find(name);
-                if (t != null) Object.DestroyImmediate(t.gameObject); // stairs to a gone shore
-            }
-
-            Transform checkpoint = harbor.transform.Find("DockCheckpoint");
-            if (checkpoint != null) checkpoint.position += slide;
-            Transform gangway = harbor.transform.Find("Gangway");
-            if (gangway != null) gangway.position += shipSlide;
-            Transform home = FindDeep(harbor.transform, "HomeMooring");
-            if (home != null) home.position = new Vector3(DockEdgeX, 0f, DockCenterZ - 5.45f);
-            var ship = harbor.GetComponentInChildren<ShipController>(true);
-            if (ship != null) ship.transform.position += shipSlide;
-
-            Transform hazard = harbor.transform.Find("WaterHazard");
-            var hazardBox = hazard != null ? hazard.GetComponent<BoxCollider>() : null;
-            if (hazardBox != null)
-            {
-                hazard.position = new Vector3(0f, hazard.position.y, -70f);
-                hazardBox.size = new Vector3(180f, 3f, 180f);
-            }
-
-            Scene scene = SceneManager.GetActiveScene();
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] Home dock moved to the origin (spawn floor); " +
-                      "ship, gangway, checkpoint and mooring moved with it.");
-        }
-
-        // Scene migration: harbors built before the raised dock get the stairs version, then the
-        // current ship is re-swapped so its mooring height, rails, and gangway match.
-        private static void RebuildDockOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            Transform dock = harbor.transform.Find("Dock");
-            if (dock == null) return;
-
-            float top = dock.position.y + dock.localScale.y * 0.5f;
-            if (Mathf.Abs(top - DockTopY) < 0.05f) return; // already the raised dock
-
-            Object.DestroyImmediate(dock.gameObject);
-            foreach (string name in new[] { "DockCheckpoint", "Gangway", "DockStep1", "DockStep2", "DockStep3" })
-            {
-                Transform t = harbor.transform.Find(name);
-                if (t != null) Object.DestroyImmediate(t.gameObject);
-            }
-            BuildDock(harbor);
-
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            ShipSpec spec = WarshipSpec;
-            if (current != null && current.name.Contains("Medium")) spec = MediumSpec;
-            else if (current != null && current.name.Contains("Large")) spec = LargeSpec;
-            Debug.Log("[ShipTestAreaBuilder] Dock rebuilt with shore stairs; re-mooring the ship to match.");
-            SwapHarborShip(spec); // rebuilds rails/gangway and saves the scene
-        }
-
-        // Scene migration: if the moored ship's prefab was generated by an older builder
-        // version, rebuild it and re-moor so collider/mooring fixes actually reach the scene.
-        private static void EnsureCurrentBuildOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null) return;
-            var current = harbor.GetComponentInChildren<ShipController>(true);
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPathFor(spec));
-            if (asset == null || FindDeep(asset.transform, $"BuildTag_v{BuildVersion}") != null) return;
-
-            Debug.Log($"[ShipTestAreaBuilder] {spec.prefabName} predates builder v{BuildVersion}; rebuilding and re-mooring.");
-            SwapHarborShip(spec);
-        }
-
         private static void PlaceRock(GameObject parent, string prefabName, Vector3 pos, float yaw)
         {
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>($"{SyntyRoot}/Environments/{prefabName}.prefab");
@@ -2271,204 +1776,7 @@ namespace Game.EditorTools
 
         // ---------------------------------------------------------------- maintenance
 
-        /// <summary>
-        /// Extends GrabPromptHUD.prefab with the helm prompt rows (take the helm / steering
-        /// controls / let go), cloning the existing rows so styling and placement stay consistent.
-        /// Idempotent: does nothing if a CanSteer row is already configured.
-        /// </summary>
-        [MenuItem("Tools/Ship/Add Helm Prompt Rows To HUD")]
-        public static void AddHelmPromptRowsMenu() => AddHelmPromptRows(logIfPresent: true);
-
-        private static void AddHelmPromptRows(bool logIfPresent)
-        {
-            if (!File.Exists(HudPrefabPath)) return;
-
-            GameObject hud = PrefabUtility.LoadPrefabContents(HudPrefabPath);
-            try
-            {
-                var view = hud.GetComponentInChildren<GrabPromptView>(true);
-                if (view == null) return;
-
-                var so = new SerializedObject(view);
-                SerializedProperty rows = so.FindProperty("rows");
-
-                GameObject grabTemplate = null, dropTemplate = null, throwTemplate = null;
-                for (int i = 0; i < rows.arraySize; i++)
-                {
-                    SerializedProperty row = rows.GetArrayElementAtIndex(i);
-                    int visibleIn = row.FindPropertyRelative("visibleIn").enumValueIndex;
-                    int binding = row.FindPropertyRelative("binding").enumValueIndex;
-                    var root = row.FindPropertyRelative("root").objectReferenceValue as GameObject;
-
-                    if (visibleIn == (int)GrabPromptChannel.State.CanSteer)
-                    {
-                        if (logIfPresent) Debug.Log("[ShipTestAreaBuilder] Helm prompt rows already present.");
-                        return;
-                    }
-                    if (visibleIn == (int)GrabPromptChannel.State.CanGrab) grabTemplate = root;
-                    if (visibleIn == (int)GrabPromptChannel.State.Holding && binding == 0) dropTemplate = root;
-                    if (visibleIn == (int)GrabPromptChannel.State.Holding && binding == 1) throwTemplate = root;
-                }
-                if (grabTemplate == null || dropTemplate == null || throwTemplate == null)
-                {
-                    Debug.LogWarning("[ShipTestAreaBuilder] GrabPromptHUD rows not in expected shape; helm prompts not added.");
-                    return;
-                }
-
-                // Clones inherit the template's anchors, so each new row lands where its
-                // never-simultaneously-visible counterpart sits.
-                GameObject takeRow = CloneRow(grabTemplate, "TakeHelmRow");
-                GameObject steerRow = CloneRow(dropTemplate, "SteerControlsRow");
-                GameObject letGoRow = CloneRow(throwTemplate, "LetGoHelmRow");
-                // The controls line is longer than the binding rows; never clip it.
-                var steerText = steerRow.GetComponent<UnityEngine.UI.Text>();
-                if (steerText != null) steerText.horizontalOverflow = HorizontalWrapMode.Overflow;
-
-                AppendRow(rows, GrabPromptChannel.State.CanSteer, 0, "Take the helm", takeRow, false);
-                AppendRow(rows, GrabPromptChannel.State.Steering, 0, "", steerRow, true);
-                AppendRow(rows, GrabPromptChannel.State.Steering, 0, "Let go", letGoRow, false);
-                so.ApplyModifiedPropertiesWithoutUndo();
-
-                PrefabUtility.SaveAsPrefabAsset(hud, HudPrefabPath);
-                Debug.Log("[ShipTestAreaBuilder] GrabPromptHUD.prefab: added helm prompt rows (take/steer/let go).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(hud);
-            }
-        }
-
-        /// <summary>Adds the CanUseStation context row to the HUD (shows "[E] Unfurl/Furl sails"
-        /// at a mast). Cloned from the grab row; idempotent.</summary>
-        [MenuItem("Tools/Ship/Add Station Prompt Row To HUD")]
-        public static void AddStationPromptRowMenu() => AddStationPromptRow(logIfPresent: true);
-
-        private static void AddStationPromptRow(bool logIfPresent)
-        {
-            if (!File.Exists(HudPrefabPath)) return;
-
-            GameObject hud = PrefabUtility.LoadPrefabContents(HudPrefabPath);
-            try
-            {
-                var view = hud.GetComponentInChildren<GrabPromptView>(true);
-                if (view == null) return;
-
-                var so = new SerializedObject(view);
-                SerializedProperty rows = so.FindProperty("rows");
-
-                GameObject grabTemplate = null;
-                for (int i = 0; i < rows.arraySize; i++)
-                {
-                    SerializedProperty row = rows.GetArrayElementAtIndex(i);
-                    int visibleIn = row.FindPropertyRelative("visibleIn").enumValueIndex;
-                    if (visibleIn == (int)GrabPromptChannel.State.CanUseStation)
-                    {
-                        if (logIfPresent) Debug.Log("[ShipTestAreaBuilder] Station prompt row already present.");
-                        return;
-                    }
-                    if (visibleIn == (int)GrabPromptChannel.State.CanGrab)
-                        grabTemplate = row.FindPropertyRelative("root").objectReferenceValue as GameObject;
-                }
-                if (grabTemplate == null) return;
-
-                GameObject stationRow = CloneRow(grabTemplate, "StationRow");
-                var text = stationRow.GetComponent<UnityEngine.UI.Text>();
-                if (text != null) text.horizontalOverflow = HorizontalWrapMode.Overflow;
-                AppendRow(rows, GrabPromptChannel.State.CanUseStation, 0, "", stationRow, true);
-                so.ApplyModifiedPropertiesWithoutUndo();
-
-                PrefabUtility.SaveAsPrefabAsset(hud, HudPrefabPath);
-                Debug.Log("[ShipTestAreaBuilder] GrabPromptHUD.prefab: added the station prompt row.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(hud);
-            }
-        }
-
-        /// <summary>
-        /// Fixes two physics hazards in the legacy Ship.prefab in place (preserving fileIDs so a
-        /// scene instance keeps its references): disables the Synty hull's non-convex
-        /// MeshColliders and bakes the planar constraints + no-gravity into the Rigidbody.
-        /// New-style prefabs get both at build time.
-        /// </summary>
-        [MenuItem("Tools/Ship/Patch Ship Prefab Physics")]
-        public static void PatchShipPrefabPhysics()
-        {
-            if (!File.Exists(LegacyShipPrefabPath)) return;
-
-            // Cheap check against the asset before doing a full contents edit.
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(LegacyShipPrefabPath);
-            var rbAsset = asset != null ? asset.GetComponent<Rigidbody>() : null;
-            bool needsPatch = rbAsset != null &&
-                (rbAsset.constraints == RigidbodyConstraints.None || rbAsset.useGravity ||
-                 asset.GetComponentsInChildren<MeshCollider>(true).Any(mc => mc.enabled));
-            if (!needsPatch) return;
-
-            GameObject ship = PrefabUtility.LoadPrefabContents(LegacyShipPrefabPath);
-            try
-            {
-                var rb = ship.GetComponent<Rigidbody>();
-                rb.constraints = RigidbodyConstraints.FreezePositionY
-                               | RigidbodyConstraints.FreezeRotationX
-                               | RigidbodyConstraints.FreezeRotationZ;
-                rb.useGravity = false;
-                rb.interpolation = RigidbodyInterpolation.Interpolate;
-
-                int disabled = 0;
-                foreach (MeshCollider mc in ship.GetComponentsInChildren<MeshCollider>(true))
-                    if (mc.enabled) { mc.enabled = false; disabled++; }
-
-                PrefabUtility.SaveAsPrefabAsset(ship, LegacyShipPrefabPath);
-                Debug.Log($"[ShipTestAreaBuilder] Ship.prefab patched: baked planar Rigidbody constraints, " +
-                          $"disabled {disabled} non-convex hull MeshCollider(s).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(ship);
-            }
-        }
-
-        /// <summary>Moves the RunHud restart button from bottom-centre (where it overlapped the
-        /// interaction prompts) to the bottom-right corner. Idempotent via the anchor check.</summary>
-        [MenuItem("Tools/Ship/Move Restart Button To Corner")]
-        public static void MoveRestartButtonToCorner()
-        {
-            Scene scene = SceneManager.GetActiveScene();
-            if (scene.path != ScenePath) return; // only touch the scene we know
-
-            GameObject button = GameObject.Find("RestartButton");
-            var rect = button != null ? button.GetComponent<RectTransform>() : null;
-            if (rect == null || rect.anchorMin.x > 0.9f) return; // missing or already moved
-
-            rect.anchorMin = rect.anchorMax = new Vector2(1f, 0f);
-            rect.anchoredPosition = new Vector2(-160f, 56f); // 260-wide button: ~30px corner margin
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] RestartButton moved to the bottom-right corner.");
-        }
-
         // ---------------------------------------------------------------- helpers
-
-        private static GameObject CloneRow(GameObject template, string name)
-        {
-            var clone = Object.Instantiate(template, template.transform.parent);
-            clone.name = name;
-            return clone;
-        }
-
-        private static void AppendRow(SerializedProperty rows, GrabPromptChannel.State visibleIn,
-            int binding, string label, GameObject root, bool useContextLine)
-        {
-            rows.arraySize++;
-            SerializedProperty row = rows.GetArrayElementAtIndex(rows.arraySize - 1);
-            row.FindPropertyRelative("visibleIn").enumValueIndex = (int)visibleIn;
-            row.FindPropertyRelative("binding").enumValueIndex = binding;
-            row.FindPropertyRelative("label").stringValue = label;
-            row.FindPropertyRelative("root").objectReferenceValue = root;
-            row.FindPropertyRelative("text").objectReferenceValue = root.GetComponent<UnityEngine.UI.Text>();
-            row.FindPropertyRelative("useContextLine").boolValue = useContextLine;
-        }
 
         private static void AddBox(GameObject parent, string name, Vector3 center, Vector3 size, bool trigger)
         {
@@ -2578,25 +1886,44 @@ namespace Game.EditorTools
         }
 
         // Sand height (relative to the waterline) at a world-space (x, z) — the single
-        // source both the mesh and the dressing sample. A berth channel keeps the water
-        // east of the dock deep, so moored hulls never touch the island's underwater
-        // skirt; it starts past the dock's east edge, so the beach ramp is untouched.
+        // source both the mesh and the dressing sample. A dredged berth keeps the water
+        // east of the dock DEEP: the warship draws 1.65 m and heaves nearly a metre more
+        // in a swell, and its moored hull starts just 0.85 m off the dock face — so the
+        // cut drops like a quay wall from the dock's east edge to 3.4 m below the
+        // waterline, covering the whole hull footprint (z < 9). The beach ramp lives at
+        // x <= 4 and is untouched.
         private static float IslandHeightWorld(float x, float z)
         {
             float dx = x, dz = z - IslandCenterZ;
             float dist = Mathf.Sqrt(dx * dx + dz * dz);
             float h = IslandHeight(IslandRadius(Mathf.Atan2(dx, dz)) - dist);
-            float channel = Mathf.Clamp01(0.5f * Mathf.Min(x - 8.2f, 12f - z));
-            return Mathf.Lerp(h, Mathf.Min(h, -2.4f), channel);
+            float channel = Mathf.Clamp01(Mathf.Min((x - 4f) * 1.4f, (9f - z) * 0.8f));
+            return Mathf.Lerp(h, Mathf.Min(h, -3.4f), channel);
         }
 
-        // Maintenance: raise the home island behind the dock once.
+        // Maintenance: raise the home island behind the dock; rebuilt whenever the layout
+        // version (the mesh name) is stale, so berth-dredging fixes reach existing scenes.
         private static void EnsureStartIslandOnce()
         {
             if (SceneManager.GetActiveScene().path != ScenePath) return;
             GameObject harbor = GameObject.Find("Harbor");
-            if (harbor == null || harbor.transform.Find("StartIsland") != null) return;
+            if (harbor == null) return;
+            Transform sand = harbor.transform.Find("StartIsland/Sand");
+            var mf = sand != null ? sand.GetComponent<MeshFilter>() : null;
+            if (mf != null && mf.sharedMesh != null && mf.sharedMesh.name == IslandMeshName) return;
+            TearDownStartIsland(harbor);
             BuildStartIsland(harbor);
+        }
+
+        // Remove the island and everything derived from it (stairs, piles, old mesh asset).
+        private static void TearDownStartIsland(GameObject harbor)
+        {
+            foreach (string name in new[] { "StartIsland", "DockShoreStairs", "DockPiles" })
+            {
+                Transform t = harbor.transform.Find(name);
+                if (t != null) Object.DestroyImmediate(t.gameObject);
+            }
+            AssetDatabase.DeleteAsset(IslandMeshPath);
         }
 
         [MenuItem("Tools/Ship/Rebuild Start Island")]
@@ -2611,13 +1938,7 @@ namespace Game.EditorTools
                 Debug.LogError("[ShipTestAreaBuilder] No Harbor in the scene — run Tools > Ship > Build Ship Test Area first.");
                 return;
             }
-            Transform old = harbor.transform.Find("StartIsland");
-            if (old != null) Object.DestroyImmediate(old.gameObject);
-            Transform stairs = harbor.transform.Find("DockShoreStairs");
-            if (stairs != null) Object.DestroyImmediate(stairs.gameObject); // re-derived with the island
-            Transform piles = harbor.transform.Find("DockPiles");
-            if (piles != null) Object.DestroyImmediate(piles.gameObject); // stair supports track the flight
-            AssetDatabase.DeleteAsset(IslandMeshPath); // regenerate from the current layout code
+            TearDownStartIsland(harbor);
             BuildStartIsland(harbor);
         }
 
@@ -2638,8 +1959,7 @@ namespace Game.EditorTools
             var sand = new GameObject("Sand");
             sand.transform.SetParent(root.transform, false);
             sand.AddComponent<MeshFilter>().sharedMesh = mesh;
-            sand.AddComponent<MeshRenderer>().sharedMaterial = GetOrCreateMaterial(
-                SandMatPath, new Color(0.87f, 0.78f, 0.55f), 0.05f);
+            sand.AddComponent<MeshRenderer>().sharedMaterial = GetIslandTerrainMaterial(waterY);
             sand.AddComponent<MeshCollider>().sharedMesh = mesh; // static: non-convex is fine
 
             PlaceIslandFlora(root);
@@ -2879,6 +2199,538 @@ namespace Game.EditorTools
             }
         }
 
+        // Maintenance: hang the day/night cycle on the scene's sun once.
+        private static void EnsureDayNightOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            Light sun = null;
+            foreach (Light l in Object.FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (l.type == LightType.Directional) { sun = l; break; }
+            if (sun == null || sun.GetComponent<DayNightCycle>() != null) return;
+
+            sun.gameObject.AddComponent<DayNightCycle>();
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Day/night cycle added to the directional light " +
+                      "(10-minute days, network-synced clock).");
+        }
+
+        private const string SkyMatPath = "Assets/Art/Materials/Sky_Stylized.mat";
+
+        // Maintenance: swap the built-in procedural skybox for the stylized day/night sky
+        // once (day gradient + sun by day, starfield + moon by night; DayNightCycle
+        // drives the blend at runtime).
+        private static void EnsureSkyOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            Shader shader = Shader.Find("Sea/StylizedSky");
+            if (shader == null) return; // not imported yet; a later pass gets it
+
+            Material mat = AssetDatabase.LoadAssetAtPath<Material>(SkyMatPath);
+            if (mat == null)
+            {
+                mat = new Material(shader);
+                AssetDatabase.CreateAsset(mat, SkyMatPath);
+            }
+            else if (mat.shader != shader)
+            {
+                mat.shader = shader;
+                EditorUtility.SetDirty(mat);
+            }
+            if (RenderSettings.skybox == mat) return;
+
+            RenderSettings.skybox = mat;
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            AssetDatabase.SaveAssets();
+            Debug.Log("[ShipTestAreaBuilder] Skybox swapped to the stylized day/night sky " +
+                      "(stars and a moon after dark).");
+        }
+
+        // Maintenance: keep the saved scene's ship at its berth. A physics mishap during
+        // play (a grounding — like the pre-dredge berth bug) can leave a drifted pose
+        // saved into the scene; the berth is the authored start state, so put it back.
+        // Derives the mooring from the prefab's own colliders, exactly like a ship swap.
+        private static void EnsureShipMoored()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            var ship = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            if (ship == null) return;
+            GameObject source = PrefabUtility.GetCorrespondingObjectFromSource(ship.gameObject);
+            if (source == null) return;
+
+            BoxCollider[] boxes = source.GetComponentsInChildren<BoxCollider>(true);
+            var decks = boxes.Where(b => b.name == "Deck" && !b.isTrigger).ToList();
+            BoxCollider hull = boxes.FirstOrDefault(b => b.name == "Hull" && !b.isTrigger);
+            if (decks.Count == 0 || hull == null) return;
+
+            Vector3 RootLocal(BoxCollider b) =>
+                source.transform.InverseTransformPoint(b.transform.TransformPoint(b.center));
+            float deckLow = decks.Min(b => RootLocal(b).y + b.size.y * 0.5f);
+            float zMin = decks.Min(b => RootLocal(b).z - b.size.z * 0.5f);
+            float zMax = decks.Max(b => RootLocal(b).z + b.size.z * 0.5f);
+            float beamHalf = hull.size.x * 0.5f / 0.95f;
+            var moor = new Vector3(
+                DockEdgeX + beamHalf + 0.7f,
+                DockTopY - deckLow,
+                DockCenterZ + 4.55f - (zMax - zMin) * 0.5f);
+
+            if (Vector3.Distance(ship.transform.position, moor) < 1.5f) return;
+            Vector3 was = ship.transform.position;
+            ship.transform.SetPositionAndRotation(moor, Quaternion.Euler(0f, 180f, 0f));
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log($"[ShipTestAreaBuilder] Ship re-moored: drifted pose {was} put back at {moor}.");
+        }
+
+        // ---------------------------------------------------------------- archipelago
+
+        /// <summary>
+        /// A destination island: analytic coast + height like the start island, but fully
+        /// parameterized — and optionally cut by a ship-navigable river, a quadratic-bezier
+        /// channel carved below the waterline from coast to coast. Everything derives from
+        /// the spec, so the mesh, the collider, the flora filter and any future gameplay
+        /// queries all agree about where land, beach and river are.
+        /// </summary>
+        private struct RiverSpec
+        {
+            public float entryDeg, exitDeg; // coast bearings (deg from +Z/north)
+            public float halfWidth;         // nominal; the run narrows/widens around this
+            public float bend;              // sideways bow of the channel's midpoint (m)
+
+            public RiverSpec(float entry, float exit, float halfWidth, float bend)
+            {
+                entryDeg = entry; exitDeg = exit; this.halfWidth = halfWidth; this.bend = bend;
+            }
+        }
+
+        private struct PeakSpec
+        {
+            public float bearingDeg;  // direction from the island centre
+            public float distFrac;    // how far out along the radius (0 = centre)
+            public float height;      // summit height above the interior (m)
+            public float footRadius;  // gaussian falloff radius (m)
+
+            public PeakSpec(float bearingDeg, float distFrac, float height, float footRadius)
+            {
+                this.bearingDeg = bearingDeg; this.distFrac = distFrac;
+                this.height = height; this.footRadius = footRadius;
+            }
+        }
+
+        private class IslandSpec
+        {
+            public string name;
+            public Vector2 center;              // world XZ
+            public float radius;                // base coast radius (m)
+            public float plateau = 4.5f;        // interior rise above the beach crest (m)
+            public float hillNoise = 2.5f;      // rolling-terrain noise amplitude inland (m)
+            public float phaseA, phaseB;        // noise phases: each island's own character
+            public PeakSpec[] peaks = { };      // mountains rising off the interior
+            public RiverSpec[] rivers = { };
+
+            // Submerged sand ring outside the coast; grows with the island.
+            public float Skirt => Mathf.Max(14f, radius * 0.08f);
+
+            // Coast noise scales with the island: a 260 m island gets ~30 m bays and
+            // headlands, so circumnavigating it is a coastline, not a circle.
+            public float CoastRadius(float a) =>
+                radius
+                + radius * 0.10f * Mathf.Sin(3f * a + phaseA)
+                + radius * 0.05f * Mathf.Sin(7f * a + phaseB)
+                + radius * 0.025f * Mathf.Sin(13f * a + phaseA * 1.7f);
+        }
+
+        // The fleet of destinations: three big islands (minutes to sail around) and three
+        // small waypoints. Every river entry faces the home harbor's side of the island so
+        // a run can line the mouth up from open water; exits punch out the far coast, so a
+        // river is a genuine shortcut THROUGH the island, not a dead end — Grande's two
+        // rivers cross mid-island in a navigable junction. Positions keep clear of the
+        // rock slalom (x -11..13, z -60..-118), JettyEast (48,-85), JettyIsland
+        // (-40,-130) and the background-island visual at (-30,-145).
+        private static readonly IslandSpec[] Archipelago =
+        {
+            // Small waypoints on the near sea.
+            new IslandSpec { name = "Riverrun", center = new Vector2(150f, -70f), radius = 38f,
+                plateau = 4.5f, hillNoise = 1.5f, phaseA = 1.3f, phaseB = 4.0f,
+                peaks = new[] { new PeakSpec(150f, 0.3f, 9f, 26f) },
+                rivers = new[] { new RiverSpec(-65f, 115f, 9f, 8f) } },
+            new IslandSpec { name = "Serpent", center = new Vector2(-160f, -100f), radius = 42f,
+                plateau = 5.5f, hillNoise = 1.5f, phaseA = 2.6f, phaseB = 0.9f,
+                peaks = new[] { new PeakSpec(-40f, 0.35f, 12f, 30f) },
+                rivers = new[] { new RiverSpec(58f, -130f, 9f, 14f) } },
+            new IslandSpec { name = "BareKnuckle", center = new Vector2(-90f, -220f), radius = 26f,
+                plateau = 3f, hillNoise = 1.2f, phaseA = 5.3f, phaseB = 3.5f,
+                peaks = new[] { new PeakSpec(10f, 0.2f, 8f, 18f) } },
+
+            // The big three, out on open water — real relief: ridgelines and summits.
+            new IslandSpec { name = "Grande", center = new Vector2(640f, -420f), radius = 260f,
+                plateau = 11f, hillNoise = 4f, phaseA = 0.7f, phaseB = 3.1f,
+                peaks = new[] { new PeakSpec(95f, 0.32f, 38f, 62f),
+                                new PeakSpec(205f, 0.45f, 30f, 72f),
+                                new PeakSpec(330f, 0.5f, 22f, 52f) },
+                rivers = new[] { new RiverSpec(-60f, 140f, 12f, 35f),
+                                 new RiverSpec(30f, -155f, 10f, -30f) } },
+            new IslandSpec { name = "Westwatch", center = new Vector2(-600f, -350f), radius = 200f,
+                plateau = 9f, hillNoise = 3.5f, phaseA = 4.4f, phaseB = 1.8f,
+                peaks = new[] { new PeakSpec(-95f, 0.4f, 27f, 58f),
+                                new PeakSpec(120f, 0.42f, 20f, 48f) },
+                rivers = new[] { new RiverSpec(40f, -150f, 13f, 55f) } },
+            new IslandSpec { name = "Longreach", center = new Vector2(80f, -700f), radius = 160f,
+                plateau = 8f, hillNoise = 3f, phaseA = 2.0f, phaseB = 5.1f,
+                peaks = new[] { new PeakSpec(95f, 0.35f, 23f, 50f),
+                                new PeakSpec(262f, 0.4f, 18f, 44f) },
+                rivers = new[] { new RiverSpec(-8f, 175f, 12f, 30f) } },
+        };
+
+        // Deterministic value noise (same construction as WaterSurface's) for terrain and
+        // scatter — no RNG, so every rebuild and every machine agrees.
+        private static float Hash01(float x, float y)
+        {
+            float h = Mathf.Sin(x * 127.1f + y * 311.7f) * 43758.5453f;
+            return h - Mathf.Floor(h);
+        }
+
+        private static float VNoise2(float x, float y)
+        {
+            float ix = Mathf.Floor(x), iy = Mathf.Floor(y);
+            float fx = x - ix, fy = y - iy;
+            float ux = fx * fx * (3f - 2f * fx), uy = fy * fy * (3f - 2f * fy);
+            return Mathf.Lerp(
+                Mathf.Lerp(Hash01(ix, iy), Hash01(ix + 1f, iy), ux),
+                Mathf.Lerp(Hash01(ix, iy + 1f), Hash01(ix + 1f, iy + 1f), ux), uy);
+        }
+
+        private static Vector2 Bearing(float deg) =>
+            new Vector2(Mathf.Sin(deg * Mathf.Deg2Rad), Mathf.Cos(deg * Mathf.Deg2Rad));
+
+        // How a river shapes the ground at (x, z): returns the signed distance OUTSIDE the
+        // local channel edge (negative = in the water) and the local bed depth. The
+        // centreline is a quadratic bezier from coast to coast with a meander wave
+        // superimposed (fading at the ends so the mouths stay aimed); the width breathes
+        // along the run — narrows in the reaches, flares into estuaries at both mouths —
+        // and the bed undulates between pools and shallower bars. All deterministic from
+        // the spec's phases; sampled as a polyline, editor-time only.
+        private static void RiverCarveAt(IslandSpec spec, in RiverSpec river, float x, float z,
+            out float edgeDist, out float bed)
+        {
+            float reach = spec.radius * 1.2f + spec.Skirt + 4f;
+            Vector2 p0 = spec.center + Bearing(river.entryDeg) * reach;
+            Vector2 p2 = spec.center + Bearing(river.exitDeg) * reach;
+            Vector2 chordMid = (p0 + p2) * 0.5f;
+            Vector2 chordDir = (p2 - p0).normalized;
+            Vector2 chordPerp = new Vector2(-chordDir.y, chordDir.x);
+            Vector2 p1 = Vector2.Lerp(chordMid, spec.center, 0.6f) + chordPerp * river.bend;
+            float meanderAmp = Mathf.Clamp(spec.radius * 0.06f, 3f, 16f);
+
+            var p = new Vector2(x, z);
+            float best = float.MaxValue, bestT = 0f;
+            Vector2 prev = Vector2.zero;
+            const int Steps = 48;
+            for (int i = 0; i <= Steps; i++)
+            {
+                float t = i / (float)Steps;
+                Vector2 q = (1f - t) * (1f - t) * p0 + 2f * (1f - t) * t * p1 + t * t * p2;
+                Vector2 tan = (2f * (1f - t) * (p1 - p0) + 2f * t * (p2 - p1)).normalized;
+                // Meander: two sine waves swinging the channel side to side, windowed by
+                // sin(pi t) so the mouths themselves never wander off their bearings.
+                float wiggle = Mathf.Sin(t * 14.5f + spec.phaseB * 3f)
+                             + 0.5f * Mathf.Sin(t * 27f + spec.phaseA * 2f);
+                q += new Vector2(-tan.y, tan.x) * (wiggle * meanderAmp * Mathf.Sin(t * Mathf.PI));
+
+                if (i > 0)
+                {
+                    float d = DistPointSegment(p, prev, q);
+                    if (d < best) { best = d; bestT = t - 0.5f / Steps; }
+                }
+                prev = q;
+            }
+
+            // Local width: breathes ±30% along the run, flaring wide into an estuary over
+            // the last stretch to each mouth.
+            float flare = 1f + 1.4f * (Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.16f, 0f, bestT))
+                                     + Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.84f, 1f, bestT)));
+            float width = river.halfWidth * flare
+                        * (1f + 0.3f * Mathf.Sin(bestT * 11.7f + spec.phaseA * 4f));
+            edgeDist = best - width;
+
+            // Bed depth: pools and bars, never shallower than the ship + heave needs.
+            bed = -3.4f + 0.5f * Mathf.Sin(bestT * 8.3f + spec.phaseB * 2f);
+        }
+
+        private static float DistPointSegment(Vector2 p, Vector2 a, Vector2 b)
+        {
+            Vector2 ab = b - a;
+            float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / Mathf.Max(1e-6f, ab.sqrMagnitude));
+            return Vector2.Distance(p, a + ab * t);
+        }
+
+        // Sand height relative to the waterline at world (x, z) for a spec island. Beach
+        // slope into a radius-scaled interior climb, then real relief on top: rolling
+        // value-noise hills and gaussian mountain peaks, both masked to the interior so
+        // the coast stays beach. Rivers carve LAST, so they cut through whatever relief
+        // is in the way — a river crossing a mountain's foot becomes a gorge, and the
+        // terrain shader paints the steep cut walls as rock by itself.
+        private static float SpecHeight(IslandSpec spec, float x, float z)
+        {
+            float dx = x - spec.center.x, dz = z - spec.center.y;
+            float dist = Mathf.Sqrt(dx * dx + dz * dz);
+            float s = spec.CoastRadius(Mathf.Atan2(dx, dz)) - dist;
+            float hillEnd = Mathf.Max(26f, spec.radius * 0.45f);
+            float hill = spec.plateau * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(8f, hillEnd, s));
+            float h = Mathf.Min(s * BeachSlope, 1f + hill);
+
+            // Interior mask: relief fades in past the beach so the waterline stays sand.
+            float inland = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(6f, 18f, s));
+            if (inland > 0f)
+            {
+                float rolling = VNoise2(x * 0.033f + spec.phaseA, z * 0.033f + spec.phaseB)
+                              + 0.5f * VNoise2(x * 0.09f + spec.phaseB, z * 0.09f + spec.phaseA);
+                h += inland * spec.hillNoise * (rolling * 1.333f - 1f);
+
+                foreach (PeakSpec peak in spec.peaks)
+                {
+                    Vector2 summit = spec.center + Bearing(peak.bearingDeg) * (spec.radius * peak.distFrac);
+                    float dp = Vector2.Distance(new Vector2(x, z), summit) / peak.footRadius;
+                    h += inland * peak.height * Mathf.Exp(-dp * dp);
+                }
+            }
+
+            foreach (RiverSpec river in spec.rivers)
+            {
+                RiverCarveAt(spec, river, x, z, out float edgeDist, out float bed);
+                float carve = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(14f, 0f, edgeDist));
+                h = Mathf.Lerp(h, Mathf.Min(h, bed), carve);
+            }
+            return h;
+        }
+
+        // Bump to rebuild every scene's archipelago on the next maintenance pass (layout
+        // redesigns, generator changes). Island mesh assets are wiped and regenerated.
+        private const int ArchipelagoVersion = 3;
+
+        private const string IslandMatPath = "Assets/Art/Materials/Island_Terrain.mat";
+
+        // The height/slope-painted terrain material (sand -> grass -> rock). Falls back to
+        // the plain sand look until the Island/Terrain shader has imported.
+        private static Material GetIslandTerrainMaterial(float waterY)
+        {
+            Material mat = GetOrCreateMaterial(IslandMatPath, new Color(0.87f, 0.78f, 0.55f), 0.05f);
+            Shader shader = Shader.Find("Island/Terrain");
+            if (shader != null
+                && (mat.shader != shader || !Mathf.Approximately(mat.GetFloat("_WaterY"), waterY)))
+            {
+                mat.shader = shader;
+                mat.SetFloat("_WaterY", waterY);
+                EditorUtility.SetDirty(mat);
+            }
+            return mat;
+        }
+
+        // Maintenance: raise the destination archipelago once per layout version.
+        private static void EnsureArchipelagoOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            Transform existing = harbor.transform.Find("Archipelago");
+            if (existing != null && existing.Find($"ArchTag_v{ArchipelagoVersion}") != null) return;
+            RebuildArchipelago(harbor);
+        }
+
+        [MenuItem("Tools/Ship/Rebuild Archipelago")]
+        public static void RebuildArchipelagoMenu()
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null)
+            {
+                Debug.LogError("[ShipTestAreaBuilder] No Harbor in the scene — run Tools > Ship > Build Ship Test Area first.");
+                return;
+            }
+            RebuildArchipelago(harbor);
+        }
+
+        // Tear down whatever archipelago is in the scene (any version) plus its generated
+        // mesh assets, and build the current layout fresh.
+        private static void RebuildArchipelago(GameObject harbor)
+        {
+            Transform old = harbor.transform.Find("Archipelago");
+            if (old != null) Object.DestroyImmediate(old.gameObject);
+            foreach (string guid in AssetDatabase.FindAssets("t:Mesh", new[] { "Assets/Art/Models" }))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (Path.GetFileNameWithoutExtension(path).StartsWith("Island_"))
+                    AssetDatabase.DeleteAsset(path);
+            }
+            BuildArchipelago(harbor);
+        }
+
+        private static void BuildArchipelago(GameObject harbor)
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0f;
+            Material terrain = GetIslandTerrainMaterial(waterY);
+
+            var root = new GameObject("Archipelago");
+            root.transform.SetParent(harbor.transform, false);
+
+            foreach (IslandSpec spec in Archipelago)
+            {
+                var island = new GameObject(spec.name);
+                island.transform.SetParent(root.transform, false);
+                island.transform.position = new Vector3(spec.center.x, waterY, spec.center.y);
+
+                string path = $"Assets/Art/Models/Island_{spec.name}.asset";
+                Mesh mesh = AssetDatabase.LoadAssetAtPath<Mesh>(path);
+                if (mesh == null) mesh = BuildIslandSpecMesh(spec, path);
+
+                var sandGo = new GameObject("Sand");
+                sandGo.transform.SetParent(island.transform, false);
+                sandGo.AddComponent<MeshFilter>().sharedMesh = mesh;
+                sandGo.AddComponent<MeshRenderer>().sharedMaterial = terrain;
+                sandGo.AddComponent<MeshCollider>().sharedMesh = mesh;
+
+                PlaceSpecFlora(spec, island);
+            }
+
+            // The start island joins the same look: its mound greens over above the beach.
+            Transform startSand = harbor.transform.Find("StartIsland/Sand");
+            var startRenderer = startSand != null ? startSand.GetComponent<MeshRenderer>() : null;
+            if (startRenderer != null) startRenderer.sharedMaterial = terrain;
+
+            new GameObject($"ArchTag_v{ArchipelagoVersion}").transform.SetParent(root.transform, false);
+
+            // Drown hazard grows to cover the whole sailing area, islands included (their
+            // land stands above its top; only real water depth triggers it).
+            Transform hazard = harbor.transform.Find("WaterHazard");
+            var hazardBox = hazard != null ? hazard.GetComponent<BoxCollider>() : null;
+            if (hazardBox != null)
+            {
+                hazard.position = new Vector3(0f, hazard.position.y, -300f);
+                hazardBox.size = new Vector3(2000f, 3f, 1600f);
+            }
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[ShipTestAreaBuilder] Archipelago v{ArchipelagoVersion} raised: " +
+                      $"{Archipelago.Length} islands, big three minutes-around, " +
+                      "5 ship-navigable rivers (Grande's two cross in a junction).");
+        }
+
+        // Same radial disc as the start island, centred on the spec, heights from SpecHeight
+        // (which is world-space, so the local vertex position adds the island centre back).
+        // Resolution scales with the island so rivers stay well-sampled: ~2.6 m rings and
+        // ~3.5 m arcs at the coast, whatever the radius.
+        private static Mesh BuildIslandSpecMesh(IslandSpec spec, string assetPath)
+        {
+            int rings = Mathf.Clamp(Mathf.CeilToInt((spec.radius + spec.Skirt) / 2.6f), 40, 130);
+            int sectors = Mathf.Clamp(Mathf.CeilToInt(spec.radius * Mathf.PI * 2f / 3.5f), 96, 560);
+            var verts = new Vector3[1 + rings * sectors];
+            verts[0] = new Vector3(0f, SpecHeight(spec, spec.center.x, spec.center.y), 0f);
+            for (int k = 1; k <= rings; k++)
+                for (int s = 0; s < sectors; s++)
+                {
+                    float a = s * Mathf.PI * 2f / sectors;
+                    float r = (spec.CoastRadius(a) + spec.Skirt) * k / rings;
+                    float x = Mathf.Sin(a) * r, z = Mathf.Cos(a) * r;
+                    verts[1 + (k - 1) * sectors + s] = new Vector3(
+                        x, SpecHeight(spec, spec.center.x + x, spec.center.y + z), z);
+                }
+            var uvs = new Vector2[verts.Length];
+            for (int i = 0; i < verts.Length; i++)
+                uvs[i] = new Vector2(verts[i].x, verts[i].z) * 0.08f;
+
+            int Idx(int ring, int s) => 1 + (ring - 1) * sectors + s % sectors;
+            var tris = new List<int>(rings * sectors * 6);
+            for (int s = 0; s < sectors; s++) // centre fan
+            {
+                tris.Add(0); tris.Add(Idx(1, s)); tris.Add(Idx(1, s + 1));
+            }
+            for (int k = 1; k < rings; k++)
+                for (int s = 0; s < sectors; s++)
+                {
+                    int a = Idx(k, s), b = Idx(k, s + 1);
+                    int c = Idx(k + 1, s), d = Idx(k + 1, s + 1);
+                    tris.Add(a); tris.Add(c); tris.Add(d);
+                    tris.Add(a); tris.Add(d); tris.Add(b);
+                }
+
+            var mesh = new Mesh
+            {
+                name = $"Island_{spec.name}",
+                indexFormat = UnityEngine.Rendering.IndexFormat.UInt32,
+                vertices = verts,
+                uv = uvs,
+                triangles = tris.ToArray(),
+            };
+            mesh.RecalculateNormals();
+            Directory.CreateDirectory(Path.GetDirectoryName(assetPath));
+            AssetDatabase.CreateAsset(mesh, assetPath);
+            return mesh;
+        }
+
+        // Vegetation and rock scatter across the WHOLE island, not a ring: deterministic
+        // hash points, species picked by elevation band and slope. Palms and beach litter
+        // near the waterline, real trees/bushes/grass over the green interior, rocks and
+        // dead trees on the high or steep ground — so mountains read as crags and river
+        // gorges get bare walls, with zero hand placement. Density scales with area.
+        private static void PlaceSpecFlora(IslandSpec spec, GameObject island)
+        {
+            string[] shore = { "SM_Env_PalmTree_01", "SM_Env_PalmTree_02", "SM_Env_PalmTree_03",
+                "SM_Env_PalmTree_Tall_01", "SM_Env_PalmTree_Tall_02", "SM_Env_PalmBush_03",
+                "SM_Env_Beach_Pile_01", "SM_Env_Mangrove_Tree_01" };
+            string[] green = { "SM_Env_Tree_Large_01", "SM_Env_Tree_Large_02", "SM_Env_Bush_01",
+                "SM_Env_Bush_02", "SM_Env_Fern_01", "SM_Env_GrassPatch_01", "SM_Env_GrassPatch_02",
+                "SM_Env_GrassPatch_03", "SM_Env_Plants_01", "SM_Env_Flowers_01" };
+            string[] crag = { "SM_Env_Rocks_01", "SM_Env_Rocks_02", "SM_Env_Rocks_03",
+                "SM_Env_Rock_01", "SM_Env_Tree_Dead_01", "SM_Env_GrassPatch_02" };
+
+            var parent = new GameObject("Flora");
+            parent.transform.SetParent(island.transform, false);
+
+            int target = Mathf.Clamp(Mathf.RoundToInt(spec.radius * spec.radius / 330f), 40, 280);
+            int placed = 0;
+            for (int i = 0; i < target * 3 && placed < target; i++)
+            {
+                // Deterministic ~uniform disc sampling from the hash (sqrt for area).
+                float a = Hash01(i * 1.618f, spec.phaseA * 7.13f) * Mathf.PI * 2f;
+                float r = Mathf.Sqrt(Hash01(i * 2.398f, spec.phaseB * 5.71f)) * spec.radius * 1.05f;
+                float x = Mathf.Sin(a) * r, z = Mathf.Cos(a) * r;
+                float wx = spec.center.x + x, wz = spec.center.y + z;
+                float h = SpecHeight(spec, wx, wz);
+                if (h < 0.45f) continue; // sea, river, or wet sand
+
+                // Facet slope from finite differences; steep ground rejects trees.
+                float g = Mathf.Max(
+                    Mathf.Abs(SpecHeight(spec, wx + 2f, wz) - SpecHeight(spec, wx - 2f, wz)),
+                    Mathf.Abs(SpecHeight(spec, wx, wz + 2f) - SpecHeight(spec, wx, wz - 2f))) / 4f;
+                if (g > 0.75f) continue; // cliff face — nothing sits right there
+
+                string[] band = g > 0.5f || h > 13f ? crag : h < 2.2f ? shore : green;
+                string pick = band[(int)(Hash01(i * 3.77f, 0.5f) * band.Length) % band.Length];
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                    $"{SyntyRoot}/Environments/{pick}.prefab");
+                if (prefab == null) continue;
+
+                var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                go.transform.SetParent(parent.transform, false);
+                go.transform.localPosition = new Vector3(x, h - 0.15f, z);
+                go.transform.localRotation = Quaternion.Euler(0f, Hash01(i * 5.99f, 1f) * 360f, 0f);
+                go.transform.localScale = Vector3.one * (0.85f + Hash01(i * 8.31f, 2f) * 0.45f);
+                placed++;
+            }
+            Debug.Log($"[ShipTestAreaBuilder] {spec.name}: {placed} scatter props placed.");
+        }
+
         private static void EnsureJettiesOnce()
         {
             if (SceneManager.GetActiveScene().path != ScenePath) return;
@@ -3003,30 +2855,6 @@ namespace Game.EditorTools
             box.size = size;
         }
 
-        // Berth-zone migration: moorings used to scan by distance from their root, which a
-        // long hull parked flush could fail; give existing scene moorings their trigger
-        // volume in place (jetty roots are scene NetworkIdentities — never rebuilt).
-        private static void EnsureBerthZonesOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            bool changed = false;
-            foreach (DockMooring mooring in Object.FindObjectsByType<DockMooring>(
-                         FindObjectsInactive.Include, FindObjectsSortMode.None))
-            {
-                if (HasTriggerCollider(mooring.gameObject)) continue;
-                bool isHome = mooring.gameObject.name == "HomeMooring";
-                AddBerthZone(mooring.gameObject,
-                    isHome ? HomeBerthCenter : JettyBerthCenter,
-                    isHome ? HomeBerthSize : JettyBerthSize);
-                changed = true;
-            }
-            if (!changed) return;
-            Scene scene = SceneManager.GetActiveScene();
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] Berth trigger volumes added to scene moorings.");
-        }
-
         private static bool HasTriggerCollider(GameObject go)
         {
             foreach (Collider c in go.GetComponents<Collider>())
@@ -3092,63 +2920,6 @@ namespace Game.EditorTools
 
             var control = lightGo.AddComponent<DockLantern>();
             control.SetRefs(lamp, glowRenderer);
-        }
-
-        [MenuItem("Tools/Ship/Add Ship Status Row To HUD")]
-        public static void AddShipStatusRowMenu() => AddShipStatusRow(logIfPresent: true);
-
-        // Docking feedback: a status line above the prompt slot ("Docking…", "Moored…",
-        // "Cast off!") driven by ShipStatusView from synced ship state. Not part of the
-        // GrabPromptView rows — it coexists with whatever prompt is showing.
-        private static void AddShipStatusRow(bool logIfPresent)
-        {
-            if (!File.Exists(HudPrefabPath)) return;
-
-            GameObject hud = PrefabUtility.LoadPrefabContents(HudPrefabPath);
-            try
-            {
-                if (hud.GetComponentInChildren<ShipStatusView>(true) != null)
-                {
-                    if (logIfPresent) Debug.Log("[ShipTestAreaBuilder] Ship status row already present.");
-                    return;
-                }
-
-                var view = hud.GetComponentInChildren<GrabPromptView>(true);
-                if (view == null) return;
-
-                // Style template: the CanGrab row's Text object.
-                var so = new SerializedObject(view);
-                SerializedProperty rows = so.FindProperty("rows");
-                GameObject template = null;
-                for (int i = 0; i < rows.arraySize; i++)
-                {
-                    SerializedProperty row = rows.GetArrayElementAtIndex(i);
-                    if (row.FindPropertyRelative("visibleIn").enumValueIndex == (int)GrabPromptChannel.State.CanGrab)
-                        template = row.FindPropertyRelative("root").objectReferenceValue as GameObject;
-                }
-                if (template == null) return;
-
-                GameObject statusRow = CloneRow(template, "ShipStatusRow");
-                var text = statusRow.GetComponent<UnityEngine.UI.Text>();
-                if (text != null)
-                {
-                    text.horizontalOverflow = HorizontalWrapMode.Overflow;
-                    text.text = "";
-                }
-                var rect = statusRow.GetComponent<RectTransform>();
-                if (rect != null) rect.anchoredPosition += new Vector2(0f, 44f);
-                statusRow.SetActive(false); // ShipStatusView enables it when there is a line
-
-                var status = view.gameObject.AddComponent<ShipStatusView>();
-                status.SetText(text);
-
-                PrefabUtility.SaveAsPrefabAsset(hud, HudPrefabPath);
-                Debug.Log("[ShipTestAreaBuilder] GrabPromptHUD.prefab: added the ship status row (docking feedback).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(hud);
-            }
         }
 
         private static Material GetOrCreateEmissiveMaterial(string path, Color color)

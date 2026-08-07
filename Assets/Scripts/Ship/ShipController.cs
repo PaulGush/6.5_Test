@@ -240,8 +240,11 @@ namespace Game.Ship
                     _water.HeightAt(p.x - transform.right.x * 3f, p.z - transform.right.z * 3f));
                 targetY += mean - _water.SurfaceY;
             }
-            _rb.linearVelocity = new Vector3(velocity.x,
-                (targetY - _rb.position.y) * heaveResponse, velocity.z);
+            // Clamped: if the hull is blocked (beached, resting on something), the drive
+            // presses gently instead of building a crushing velocity that friction-pins
+            // the ship against whatever is under it.
+            float vy = Mathf.Clamp((targetY - _rb.position.y) * heaveResponse, -2.5f, 2.5f);
+            _rb.linearVelocity = new Vector3(velocity.x, vy, velocity.z);
         }
 
         // Level lock, belt-and-braces on top of the Rigidbody constraints: whatever manages
