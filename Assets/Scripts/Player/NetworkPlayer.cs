@@ -48,7 +48,7 @@ namespace Game.Player
         private string playerName = "";
 
         /// <summary>What killed a player; shown on the owner's death screen.</summary>
-        public enum CauseOfDeath : byte { Unknown = 0, Shark = 1 }
+        public enum CauseOfDeath : byte { Unknown = 0, Shark = 1, Hazard = 2 }
 
         // Server-authoritative health. Dead players are frozen (ServerMove ignores their
         // input) until their owner asks to respawn from the death screen.
@@ -226,14 +226,24 @@ namespace Game.Player
 
         private void Update()
         {
-            if (isServer && !dead)
+            if (isServer)
             {
-                // The server owns the simulation, so it enforces world bounds for every player.
-                if (transform.position.y < killY)
-                    ServerRespawn();
-                // Out of combat long enough -> health creeps back.
-                if (health < maxHealth && Time.time - _lastDamageTime > regenDelay)
-                    health = Mathf.Min(maxHealth, health + regenRate * Time.deltaTime);
+                if (dead)
+                {
+                    // A corpse still obeys the world: ticking with empty input lets it
+                    // settle out of the air, bob on the swim buoyancy, and keep riding
+                    // whatever it died on. FreeLook so the body's yaw is left alone.
+                    _controller.Tick(new PlayerInputState { FreeLook = true }, Time.deltaTime);
+                }
+                else
+                {
+                    // The server owns the simulation, so it enforces world bounds for every player.
+                    if (transform.position.y < killY)
+                        ServerRespawn();
+                    // Out of combat long enough -> health creeps back.
+                    if (health < maxHealth && Time.time - _lastDamageTime > regenDelay)
+                        health = Mathf.Min(maxHealth, health + regenRate * Time.deltaTime);
+                }
             }
 
             if (!isLocalPlayer) return;

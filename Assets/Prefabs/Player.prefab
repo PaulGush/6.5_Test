@@ -21,6 +21,7 @@ GameObject:
   - component: {fileID: 5566778899001122334}
   - component: {fileID: 4039947115254705632}
   - component: {fileID: 8931706958247822987}
+  - component: {fileID: 771238114592837401}
   m_Layer: 8
   m_Name: Player
   m_TagString: Untagged
@@ -276,6 +277,7 @@ MonoBehaviour:
   climbIdle: {fileID: 7400024, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
   swim: {fileID: 7400026, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
   swimIdle: {fileID: 7400028, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
+  death: {fileID: 7400030, guid: e3a7c2b41d5e4f8a9c6b0d2f7a1e8c44, type: 3}
   walkClipSpeed: 1.6
   jogClipSpeed: 3.6
   sprintClipSpeed: 6.5
@@ -283,6 +285,7 @@ MonoBehaviour:
   climbClipSpeed: 1.5
   swimClipSpeed: 2
   swimForwardLift: 0.4
+  deadFloatLift: 1.25
 --- !u!114 &4039947115254705632
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -293,9 +296,21 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 8b72794863775502c0c9d9bac09891b0, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::Game.Ship.PlayerRockView
   modelRoot: {fileID: 0}
+--- !u!114 &771238114592837401
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b3f9d1c27a8e4b5f9d0c3a6e8f2b7d15, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerRagdollView
   blendRate: 3
 --- !u!114 &8931706958247822987
 MonoBehaviour:
