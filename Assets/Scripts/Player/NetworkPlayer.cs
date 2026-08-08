@@ -35,9 +35,33 @@ namespace Game.Player
         [Tooltip("If a player falls below this world Y, the server respawns them at their spawn pose.")]
         [SerializeField] private float killY = -10f;
 
+        [Header("Health")]
+        [Tooltip("Maximum (and spawn) health.")]
+        [SerializeField] private float maxHealth = 100f;
+        [Tooltip("Seconds after the last hit before health starts regenerating.")]
+        [SerializeField] private float regenDelay = 8f;
+        [Tooltip("Regeneration rate once it starts (health/s).")]
+        [SerializeField] private float regenRate = 10f;
+
         // Display name, set by the owner from its Steam persona and synced to everyone.
         [SyncVar(hook = nameof(OnNameChanged))]
         private string playerName = "";
+
+        /// <summary>What killed a player; shown on the owner's death screen.</summary>
+        public enum CauseOfDeath : byte { Unknown = 0, Shark = 1 }
+
+        // Server-authoritative health. Dead players are frozen (ServerMove ignores their
+        // input) until their owner asks to respawn from the death screen.
+        [SyncVar] private float health = 100f;
+        [SyncVar] private byte deathCause;
+        [SyncVar] private bool dead;
+
+        public float Health => health;
+        public float MaxHealth => maxHealth;
+        public bool IsDead => dead;
+        public CauseOfDeath DeathCause => (CauseOfDeath)deathCause;
+
+        private float _lastDamageTime; // server-only: regen delay clock
 
         /// <summary>
         /// Test hook: when set (e.g. by a headless build started with -autowalk), the
@@ -81,6 +105,39 @@ namespace Game.Player
             // pose and the fixed start pose (the latter is used by a full run restart).
             _spawnPos = _startPos = transform.position;
             _spawnRot = _startRot = transform.rotation;
+            health = maxHealth;
+        }
+
+        /// <summary>Server: apply damage. At zero the player dies and stays frozen until the
+        /// owner requests a respawn from the death screen.</summary>
+        [Server]
+        public void ServerDamage(float amount, CauseOfDeath cause)
+        {
+            if (dead || amount <= 0f) return;
+            _lastDamageTime = Time.time;
+            health = Mathf.Max(0f, health - amount);
+            if (health <= 0f)
+            {
+                deathCause = (byte)cause;
+                dead = true;
+            }
+        }
+
+        /// <summary>Owner-side entry point (death screen): ask the server to bring us back.</summary>
+        public void RequestRespawn()
+        {
+            if (isLocalPlayer) CmdRequestRespawn();
+        }
+
+        // Owner -> server: revive at the checkpoint with full health.
+        [Command]
+        private void CmdRequestRespawn()
+        {
+            if (!dead) return;
+            dead = false;
+            deathCause = 0;
+            health = maxHealth;
+            ServerRespawn();
         }
 
         /// <summary>Server: update the respawn pose (called by a checkpoint trigger).</summary>
@@ -169,9 +226,15 @@ namespace Game.Player
 
         private void Update()
         {
-            // The server owns the simulation, so it enforces world bounds for every player.
-            if (isServer && transform.position.y < killY)
-                ServerRespawn();
+            if (isServer && !dead)
+            {
+                // The server owns the simulation, so it enforces world bounds for every player.
+                if (transform.position.y < killY)
+                    ServerRespawn();
+                // Out of combat long enough -> health creeps back.
+                if (health < maxHealth && Time.time - _lastDamageTime > regenDelay)
+                    health = Mathf.Min(maxHealth, health + regenRate * Time.deltaTime);
+            }
 
             if (!isLocalPlayer) return;
 
@@ -216,6 +279,8 @@ namespace Game.Player
         [Server]
         private void ServerMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, bool freeLook, float dt)
         {
+            if (dead) return; // corpses don't move; the owner's death screen offers respawn
+
             // Never trust client-supplied dt blindly; clamp to avoid teleport exploits/hitches.
             dt = Mathf.Clamp(dt, 0f, 0.1f);
 

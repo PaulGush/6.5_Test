@@ -7,10 +7,10 @@ namespace Game.Gameplay
     /// Shark: ambient patroller that turns predator. On its circuit it swims a wobbly
     /// circle just under the animated surface, fin breaking the water now and then. A
     /// server-side brain watches for players SWIMMING near it: linger too long inside its
-    /// detection ring and it peels off its circuit, runs the swimmer down, and a bite
-    /// sends them back to their checkpoint (same fate as the old drowning hazard). It
-    /// gives up if the prey gets out of the water or far enough away, then swims back to
-    /// its circuit.
+    /// detection ring and it peels off its circuit, runs the swimmer down, and bites —
+    /// each bite wounds (NetworkPlayer health), and the shark circles back for another
+    /// pass until the swimmer dies or escapes. It gives up if the prey gets out of the
+    /// water or far enough away, then swims back to its circuit.
     ///
     /// The server owns all movement and the NetworkTransform on the same object
     /// replicates it; patrol math is still deterministic off the synced wave clock, so
@@ -46,8 +46,12 @@ namespace Game.Gameplay
         [SerializeField] private float chaseSpeed = 6.5f;
         [Tooltip("Turn rate while hunting (deg/s).")]
         [SerializeField] private float turnRate = 110f;
-        [Tooltip("Bite distance (m): close enough eats the prey back to its checkpoint.")]
+        [Tooltip("Bite distance (m).")]
         [SerializeField] private float biteRange = 1.7f;
+        [Tooltip("Damage per bite (players spawn with 100 health).")]
+        [SerializeField] private float biteDamage = 35f;
+        [Tooltip("Pause before the next hunt after landing a bite (s) — shorter than the give-up cooldown, a wounded swimmer is worth circling back for.")]
+        [SerializeField] private float biteCooldown = 4f;
         [Tooltip("Give up when the prey gets this far away (m).")]
         [SerializeField] private float loseDistance = 50f;
         [Tooltip("Give up when the prey has been out of the water this long (s).")]
@@ -71,6 +75,7 @@ namespace Game.Gameplay
         private Mode _mode = Mode.Patrol;
         private float _linger, _chaseTime, _preyDryTime, _cooldown;
         private Game.Player.PlayerController _prey;
+        private Game.Player.NetworkPlayer _preyPlayer;
         private Game.Player.PlayerController[] _players = System.Array.Empty<Game.Player.PlayerController>();
         private float _nextPlayerScan;
 
@@ -126,6 +131,7 @@ namespace Game.Gameplay
                 if (_linger >= lingerSeconds)
                 {
                     _prey = swimmer;
+                    _preyPlayer = swimmer.GetComponent<Game.Player.NetworkPlayer>();
                     _chaseTime = 0f;
                     _preyDryTime = 0f;
                     _mode = Mode.Chase;
@@ -142,7 +148,8 @@ namespace Game.Gameplay
         private void ServerChase(float dt)
         {
             _chaseTime += dt;
-            bool lost = _prey == null || _chaseTime > maxChaseSeconds;
+            bool lost = _prey == null || _preyPlayer == null || _preyPlayer.IsDead
+                || _chaseTime > maxChaseSeconds;
             if (!lost)
             {
                 _preyDryTime = _prey.IsSwimming ? 0f : _preyDryTime + dt;
@@ -151,22 +158,30 @@ namespace Game.Gameplay
 
                 if (!lost && dist <= biteRange && _prey.IsSwimming)
                 {
-                    var player = _prey.GetComponent<Game.Player.NetworkPlayer>();
-                    if (player != null) player.RespawnAtCheckpoint(); // eaten
-                    lost = true;
+                    // A bite wounds; the shark peels off and circles back for another pass
+                    // unless that was the killing blow.
+                    _preyPlayer.ServerDamage(biteDamage, Game.Player.NetworkPlayer.CauseOfDeath.Shark);
+                    Disengage(_preyPlayer.IsDead ? cooldownSeconds : biteCooldown);
+                    return;
                 }
             }
             if (lost)
             {
-                _prey = null;
-                _cooldown = cooldownSeconds;
-                _mode = Mode.Return;
+                Disengage(cooldownSeconds);
                 return;
             }
 
             // Run the swimmer down from just below, but never breach.
             Vector3 target = _prey.transform.position + Vector3.down * 0.35f;
             Steer(target, chaseSpeed, dt);
+        }
+
+        private void Disengage(float cooldown)
+        {
+            _prey = null;
+            _preyPlayer = null;
+            _cooldown = cooldown;
+            _mode = Mode.Return;
         }
 
         // ---------- back to the circuit ----------
@@ -209,6 +224,8 @@ namespace Game.Gameplay
             foreach (var p in _players)
             {
                 if (p == null || !p.IsSwimming) continue;
+                var np = p.GetComponent<Game.Player.NetworkPlayer>();
+                if (np != null && np.IsDead) continue; // corpses aren't prey
                 float d = Vector3.Distance(transform.position, p.transform.position);
                 if (d < bestDist) { bestDist = d; best = p; }
             }

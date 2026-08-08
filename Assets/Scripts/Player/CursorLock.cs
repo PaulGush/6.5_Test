@@ -16,6 +16,10 @@ namespace Game.Player
     /// </summary>
     public class CursorLock : MonoBehaviour
     {
+        /// <summary>Overrides the lock while a modal screen needs the mouse (e.g. the
+        /// death screen's respawn button). Set/cleared by the screen that owns it.</summary>
+        public static bool ForceUnlock;
+
         private bool _menuOpen;
         private bool _wasPlaying;
         private bool _hasFocus = true;
@@ -53,7 +57,7 @@ namespace Game.Player
                 if (anyKey || anyClick) _hasFocus = true;
             }
 
-            bool lockCursor = playing && !_menuOpen && _hasFocus;
+            bool lockCursor = playing && !_menuOpen && _hasFocus && !ForceUnlock;
             // Re-assert whenever the actual state drifted from the desired one (the OS can
             // drop the lock without telling us); avoid rewriting it every frame otherwise,
             // which flickers on some Linux compositors.
