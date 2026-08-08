@@ -46,6 +46,22 @@ namespace Game.Player
         [Tooltip("Horizontal input is damped to this fraction while climbing.")]
         [SerializeField] private float climbMoveFactor = 0.4f;
 
+        [Header("Swim")]
+        [Tooltip("Move speed while swimming (m/s).")]
+        [SerializeField] private float swimSpeed = 3f;
+        [Tooltip("Move speed while swimming with sprint held (m/s).")]
+        [SerializeField] private float swimSprintSpeed = 4.5f;
+        [Tooltip("Water depth over the feet that flips walking into swimming (m).")]
+        [SerializeField] private float swimEnterDepth = 1.2f;
+        [Tooltip("Depth below the enter threshold at which swimming flips back to walking (hysteresis, m).")]
+        [SerializeField] private float swimExitDepth = 0.9f;
+        [Tooltip("How far below the animated surface the feet float while swimming (m).")]
+        [SerializeField] private float swimFloatDepth = 1.25f;
+        [Tooltip("Buoyancy spring toward the float line (1/s).")]
+        [SerializeField] private float swimBuoyancy = 4f;
+        [Tooltip("Water drag: how fast vertical momentum converges on the buoyant velocity (m/s²). Lets a fall plunge in before bobbing up.")]
+        [SerializeField] private float swimDrag = 20f;
+
         [Header("Look")]
         [Tooltip("Degrees of rotation per unit of look delta.")]
         [SerializeField] private float lookSensitivity = 0.12f;
@@ -63,6 +79,11 @@ namespace Game.Player
         private Vector3 _externalVel; // launch-imparted horizontal momentum, bleeds off over time
         private readonly Collider[] _ladderBuf = new Collider[8]; // reused by the climb overlap check
 
+        // Water surface lookup: same cached lazy scan the ships use (no singleton).
+        private Game.Gameplay.WaterSurface _water;
+        private float _nextWaterScan;
+        private float _swimSurfaceY; // animated surface height at the player, valid while swimming
+
         // Crouch: captured standing pose + the current 0..1 crouch blend.
         private float _standHeight, _bottomOffset, _standCamY, _crouchT;
         private Vector3 _standCenter;
@@ -72,6 +93,8 @@ namespace Game.Player
         public float CrouchBlend => _crouchT;
         /// <summary>True while the last Tick was in ladder-climb mode.</summary>
         public bool IsClimbing { get; private set; }
+        /// <summary>True while the last Tick was in swim mode.</summary>
+        public bool IsSwimming { get; private set; }
         /// <summary>CharacterController grounded state from the last Move.</summary>
         public bool IsGrounded => _cc != null && _cc.isGrounded;
 
@@ -117,6 +140,7 @@ namespace Game.Player
             _externalVel = Vector3.zero;
             _pitch = 0f;
             _camYaw = 0f;
+            IsSwimming = false;
             // Reset crouch back to standing.
             _crouchT = 0f;
             _cc.height = _standHeight;
@@ -194,7 +218,11 @@ namespace Game.Player
 
         private void ApplyMove(in PlayerInputState input, float dt)
         {
+            IsClimbing = OnLadder();
+            UpdateSwimming();
+
             float speed = input.Crouch ? crouchSpeed : input.Sprint ? sprintSpeed : walkSpeed;
+            if (IsSwimming) speed = input.Sprint ? swimSprintSpeed : swimSpeed;
             // Move in the LOOK frame — the body's in first person, the camera's in free
             // look — so WASD always means what the player sees on screen.
             Quaternion frame = transform.rotation * Quaternion.Euler(0f, _camYaw, 0f);
@@ -204,13 +232,28 @@ namespace Game.Player
             // Climb mode: inside a Ladder volume, forward/back input becomes vertical motion and
             // gravity is off. Horizontal input still works (damped) so the player can press into
             // the rungs and, at the top, push over onto the platform. Jump hops off.
-            IsClimbing = OnLadder();
             if (IsClimbing)
             {
                 wish *= climbMoveFactor;
                 _verticalVelocity = input.Move.y * climbSpeed;
                 if (input.JumpPressed)
                     _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, airLaunchDamping * dt);
+            }
+            // Swim mode: gravity is off; a buoyancy spring rides the capsule on the animated
+            // wave surface (HeightAt runs on NetworkTime, so server and clients agree on the
+            // waterline). Jump gives a hop — enough to splash out onto a low shore.
+            else if (IsSwimming)
+            {
+                // Feet ride swimFloatDepth under the surface -> chest at the waterline,
+                // head clear above it. _bottomOffset converts feet height to pivot height.
+                float targetY = _swimSurfaceY - swimFloatDepth - _bottomOffset;
+                float buoyant = Mathf.Clamp((targetY - transform.position.y) * swimBuoyancy, -2.5f, 2.5f);
+                // Drag toward the buoyant velocity instead of snapping: a fall still plunges
+                // in before bobbing up, and a jump hop keeps its momentum for a moment.
+                _verticalVelocity = Mathf.MoveTowards(_verticalVelocity, buoyant, swimDrag * dt);
+                if (input.JumpPressed)
+                    _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity) * 0.8f;
                 _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, airLaunchDamping * dt);
             }
             // Grounded only resets a downward velocity; a positive (jumping/just-launched) vertical is
@@ -243,6 +286,29 @@ namespace Game.Player
 
             Vector3 velocity = wish + _externalVel + Vector3.up * _verticalVelocity;
             _cc.Move(velocity * dt);
+        }
+
+        // Swim state with hysteresis: enter when the water over the feet is chest deep,
+        // leave only once it is clearly shallower, so beach waves don't flicker the state.
+        // The ladder wins over the water — you can climb out of the sea up a ship's side.
+        private void UpdateSwimming()
+        {
+            if (_water == null && Time.time >= _nextWaterScan)
+            {
+                _nextWaterScan = Time.time + 1f;
+                _water = FindAnyObjectByType<Game.Gameplay.WaterSurface>();
+            }
+            if (_water == null || IsClimbing)
+            {
+                IsSwimming = false;
+                return;
+            }
+
+            _swimSurfaceY = _water.HeightAt(transform.position.x, transform.position.z);
+            // Depth over the FEET (the pivot sits mid-capsule), so the thresholds and the
+            // float line read as real water depth on a body.
+            float depth = _swimSurfaceY - (transform.position.y + _bottomOffset);
+            IsSwimming = depth > (IsSwimming ? swimExitDepth : swimEnterDepth);
         }
 
         // Is the capsule (slightly expanded) touching a Ladder trigger volume?

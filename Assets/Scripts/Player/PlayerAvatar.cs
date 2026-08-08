@@ -13,7 +13,7 @@ namespace Game.Player
     /// Locomotion is inferred on every client from parent-space position deltas (parent
     /// space so riding a moving ship reads as standing still); clip playback rates are
     /// scaled by actual speed to avoid foot sliding. State that cannot be inferred
-    /// remotely (crouch blend, grounded, climbing) is quantized into two synced bytes by
+    /// remotely (crouch blend, grounded, climbing, swimming) is quantized into two synced bytes by
     /// the server, which owns the simulation. Carrying a prop swaps the moving-clip to a
     /// carry walk (the held Grabbable is already synced by PlayerGrabber).
     ///
@@ -21,6 +21,7 @@ namespace Game.Player
     /// first-person, so the head doesn't block the view but the shadow remains.
     /// </summary>
     [RequireComponent(typeof(PlayerController))]
+    [DefaultExecutionOrder(40)] // after PlayerRockView (0) rewrites modelRoot, before PlayerHelmPose (60)
     public class PlayerAvatar : NetworkBehaviour
     {
         [Tooltip("Root of the nested character model (must carry the humanoid Animator).")]
@@ -40,6 +41,8 @@ namespace Game.Player
         [SerializeField] private AnimationClip jumpLand;
         [SerializeField] private AnimationClip climb;
         [SerializeField] private AnimationClip climbIdle;
+        [SerializeField] private AnimationClip swim;
+        [SerializeField] private AnimationClip swimIdle;
 
         [Header("Clip nominal speeds (m/s the clip was authored at; playback is scaled by actual speed)")]
         [SerializeField] private float walkClipSpeed = 1.6f;
@@ -47,15 +50,20 @@ namespace Game.Player
         [SerializeField] private float sprintClipSpeed = 6.5f;
         [SerializeField] private float crouchClipSpeed = 1.2f;
         [SerializeField] private float climbClipSpeed = 1.5f;
+        [SerializeField] private float swimClipSpeed = 2f;
+
+        [Tooltip("Visual-only lift of the model while stroking forward (m): the prone swim pose reads mostly submerged from third person without it. The capsule and camera never move.")]
+        [SerializeField] private float swimForwardLift = 0.4f;
 
         // Mixer slots. Order is arbitrary but fixed; weights are recomputed every frame.
         private const int SlotIdle = 0, SlotWalk = 1, SlotJog = 2, SlotSprint = 3,
             SlotBack = 4, SlotCarry = 5, SlotCrouchIdle = 6, SlotCrouchWalk = 7,
             SlotJumpStart = 8, SlotJumpAir = 9, SlotJumpLand = 10,
-            SlotClimb = 11, SlotClimbIdle = 12, SlotCount = 13;
+            SlotClimb = 11, SlotClimbIdle = 12, SlotSwim = 13, SlotSwimIdle = 14, SlotCount = 15;
 
         // Server -> clients: visual state that cannot be inferred from the replicated
-        // transform. bit0 = grounded, bit1 = climbing; crouch is the 0..1 blend in a byte.
+        // transform. bit0 = grounded, bit1 = climbing, bit2 = swimming; crouch is the
+        // 0..1 blend in a byte.
         [SyncVar] private byte poseFlags = 1;
         [SyncVar] private byte crouchByte;
 
@@ -74,7 +82,7 @@ namespace Game.Player
         private Vector3 _lastLocalPos;
         private bool _hasLastPos;
         private float _planarSpeed, _forwardSpeed, _verticalSpeed;
-        private float _crouch, _airT, _climbT;
+        private float _crouch, _airT, _climbT, _swimT;
 
         // Airborne sub-state: launch clip -> falling loop -> landing overlay.
         private enum AirPhase { None, Start, Air }
@@ -112,15 +120,16 @@ namespace Game.Player
             AnimationClip[] clips =
             {
                 idle, walk, jog, sprint, walkBackwards, walkCarry, crouchIdle, crouchWalk,
-                jumpStart, jumpAir, jumpLand, climb, climbIdle,
+                jumpStart, jumpAir, jumpLand, climb, climbIdle, swim, swimIdle,
             };
             for (int i = 0; i < SlotCount; i++)
             {
                 if (clips[i] == null) continue; // slot simply never gets weight
                 _hasClip[i] = true;
                 _playables[i] = AnimationClipPlayable.Create(_graph, clips[i]);
-                // Foot IK grounds the feet on grounded poses; airborne/climb clips don't want it.
-                bool grounded = i != SlotJumpStart && i != SlotJumpAir && i != SlotClimb && i != SlotClimbIdle;
+                // Foot IK grounds the feet on grounded poses; airborne/climb/swim clips don't want it.
+                bool grounded = i != SlotJumpStart && i != SlotJumpAir && i != SlotClimb && i != SlotClimbIdle
+                    && i != SlotSwim && i != SlotSwimIdle;
                 _playables[i].SetApplyFootIK(grounded);
                 _mixer.ConnectInput(i, _playables[i], 0, 0f);
             }
@@ -160,7 +169,8 @@ namespace Game.Player
         [ServerCallback]
         private void Update()
         {
-            poseFlags = (byte)((_controller.IsGrounded ? 1 : 0) | (_controller.IsClimbing ? 2 : 0));
+            poseFlags = (byte)((_controller.IsGrounded ? 1 : 0) | (_controller.IsClimbing ? 2 : 0)
+                | (_controller.IsSwimming ? 4 : 0));
             crouchByte = (byte)Mathf.RoundToInt(Mathf.Clamp01(_controller.CrouchBlend) * 255f);
         }
 
@@ -174,6 +184,13 @@ namespace Game.Player
             BlendState(dt);
             ComputeTargets();
             ApplyWeights(dt);
+
+            // Visual-only: raise the model while stroking forward so the swimmer stays
+            // visible from third person. Safe as a += because PlayerRockView (execution
+            // order 0) rewrites modelRoot's transform every frame before this runs.
+            float lift = _swimT * Mathf.Clamp01(_planarSpeed / 0.7f) * swimForwardLift;
+            if (lift > 0.0005f && modelRoot != null)
+                modelRoot.position += Vector3.up * lift;
         }
 
         // Velocity from parent-space position deltas: works on every client off the
@@ -200,12 +217,14 @@ namespace Game.Player
         {
             bool grounded = (poseFlags & 1) != 0;
             bool climbing = (poseFlags & 2) != 0;
-            bool airborne = !grounded && !climbing;
+            bool swimming = (poseFlags & 4) != 0;
+            bool airborne = !grounded && !climbing && !swimming;
 
             float smooth = 1f - Mathf.Exp(-8f * dt);
             _crouch = Mathf.Lerp(_crouch, crouchByte / 255f, smooth);
             _airT = Mathf.Lerp(_airT, airborne ? 1f : 0f, smooth);
             _climbT = Mathf.Lerp(_climbT, climbing ? 1f : 0f, smooth);
+            _swimT = Mathf.Lerp(_swimT, swimming ? 1f : 0f, smooth);
 
             // Airborne phases: a rising launch plays the jump clip once, then the falling
             // loop; touching down after real airtime fires a decaying landing overlay.
@@ -240,11 +259,21 @@ namespace Game.Player
         {
             for (int i = 0; i < SlotCount; i++) _targets[i] = 0f;
 
-            float climbW = _climbT;
-            float airW = _airT * (1f - climbW);
-            float groundW = Mathf.Clamp01(1f - climbW - airW);
+            float swimW = _swimT;
+            float climbW = _climbT * (1f - swimW);
+            float airW = _airT * (1f - swimW - climbW);
+            float groundW = Mathf.Clamp01(1f - swimW - climbW - airW);
             float crouchW = groundW * _crouch;
             float locoW = groundW - crouchW;
+
+            // Swim: moving -> forward stroke rate-scaled by speed; still -> treading water.
+            if (swimW > 0.001f)
+            {
+                float swim01 = Mathf.Clamp01(_planarSpeed / 0.7f);
+                _targets[SlotSwim] = swimW * swim01;
+                _targets[SlotSwimIdle] = swimW * (1f - swim01);
+                SetSpeed(SlotSwim, Mathf.Clamp(_planarSpeed / swimClipSpeed, 0.7f, 1.5f));
+            }
 
             // Climb: moving -> ladder cycle scrubbed by vertical speed (negative descends);
             // hanging still -> ladder idle.
