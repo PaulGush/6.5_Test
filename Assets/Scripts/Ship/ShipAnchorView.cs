@@ -40,6 +40,14 @@ namespace Game.Ship
         [Tooltip("Fallback ring height above the prop's pivot (m). Normally the tie-on point " +
                  "is measured from the prop's meshes: the top of the anchor.")]
         [SerializeField] private float ringOffset = 0.75f;
+        [Tooltip("Chain strip prefab (a straight run of links, pivot at one end). When set, " +
+                 "rigid pieces of it replace the rope line, laid chord-to-chord along the " +
+                 "simulated curve — an anchor hangs from chain, not rope.")]
+        [SerializeField] private GameObject chainPrefab;
+        [Tooltip("Cross-section scale on the chain pieces: the Generic strip's links are " +
+                 "thin gauge and read as a dark line at distance; fatten to match the " +
+                 "hull's chunky deco chain.")]
+        [SerializeField] private float chainThickness = 1.8f;
         [Tooltip("Simulated rope points; more = smoother curve.")]
         [SerializeField] private int ropeSegments = 12;
         [Tooltip("Rope rest length as a multiple of the straight pin-to-pin distance (>1 sags).")]
@@ -69,6 +77,12 @@ namespace Game.Ship
         private float _slackNow;           // current rope sag multiplier, eased toward load state
         private LineRenderer _line;
         private Vector3[] _points, _prev; // world-space verlet points
+        private bool _hideRig;            // anchor is home: baked hull chain covers the visuals
+        private bool _wasDown;            // edge detect for the drop moment
+        private Transform[] _chain;       // pooled rigid chain pieces (chain mode)
+        private float _chainLen = 2.25f;  // one piece's natural length, measured from its mesh
+        private Vector3 _chainHangAxis = Vector3.down; // local axis the strip runs along
+        private const int MaxChainPieces = 6;
         private Game.Gameplay.WaterSurface _water;
         private float _nextWaterScan;
         private float _snapUntil;
@@ -77,6 +91,7 @@ namespace Game.Ship
         public void SetShip(ShipController value) => ship = value;
         public void SetAnchor(Transform value) => anchor = value;
         public void SetRope(Transform value, Transform top) { rope = value; ropeTop = top; }
+        public void SetChain(GameObject value) => chainPrefab = value;
         public void SetDropDistance(float value) => dropDistance = value;
 
         private void Awake()
@@ -105,6 +120,11 @@ namespace Game.Ship
                 : Mathf.Max(1f, stowedWorldY - surfaceY + submergeDepth);
 
             bool down = ship.Anchored && !ship.WeighingAnchor;
+            // A drop begins at the anchor's authored resting spot, not wherever the sim
+            // bob idled under the hawse while the rig was hidden.
+            if (down && !_wasDown && _hideRig)
+                _bob = _bobPrev = CarriedRingWorld();
+            _wasDown = down;
             Vector3 target = down ? _stowed + Vector3.down * drop : _stowed;
             if (Time.time < _snapUntil)
             {
@@ -130,15 +150,35 @@ namespace Game.Ship
             bool wet = !float.IsNaN(surfaceY) && _bob.y < surfaceY;
             SimulateSwing(dt, top, ropeLen, wet);
 
-            // Hang the prop off the bob: ring at the rope's end, body tilted along the rope.
+            // Hang the prop off the bob: ring at the rope's end, body tilted along the
+            // rope. The dangle uses the ship's plain frame (a canonical ring-up mesh
+            // hangs upright); the authored pose — for the hull anchor, its draped lean —
+            // is only blended back in as the haul brings it home.
             Vector3 ropeDir = top - _bob;
             Quaternion tilt = ropeDir.sqrMagnitude > 1e-6f
                 ? Quaternion.FromToRotation(Vector3.up, ropeDir.normalized)
                 : Quaternion.identity;
-            anchor.rotation = tilt * transform.rotation * _stowedRot;
+            anchor.rotation = tilt * transform.rotation;
             anchor.position = _bob - anchor.rotation * _ringLocal;
 
-            if (_line != null) SimulateRope(dt);
+            // The stowed anchor rests in its AUTHORED pose (draped on the hull, where the
+            // baked deco chain meets it), not dangling under the pay-out point — the
+            // hawse is offset from the stowed spot. Blend home over the last stretch of
+            // the haul so the hand-off is seamless, and hide the runtime chain once home:
+            // at rest the hull's own baked chain is the only chain in sight.
+            float stowedLen = Vector3.Distance(top,
+                transform.TransformPoint(_stowed) + Vector3.up * _ringLocal.magnitude);
+            float stowBlend = down ? 0f : 1f - Mathf.Clamp01((ropeLen - stowedLen) / 1.2f);
+            if (stowBlend > 0f)
+            {
+                anchor.position = Vector3.Lerp(anchor.position,
+                    transform.TransformPoint(_stowed), stowBlend);
+                anchor.rotation = Quaternion.Slerp(anchor.rotation,
+                    transform.rotation * _stowedRot, stowBlend);
+            }
+            _hideRig = stowBlend > 0.95f;
+
+            if (_line != null || _chain != null) SimulateRope(dt);
         }
 
         // Where the rigid payout animation carries the ring — defines the rope length only.
@@ -150,6 +190,16 @@ namespace Game.Ship
         // convert exactly). The serialized ringOffset only covers a prop with no renderers.
         private Vector3 MeasureRingLocal()
         {
+            // A single-mesh prop measures exactly from its local mesh bounds, whatever
+            // its authored pose (the canonical hull anchor has its ring at the origin).
+            // The world-bounds fallback below inflates for tilted props.
+            MeshFilter mf = anchor.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+            {
+                Bounds b = mf.sharedMesh.bounds;
+                return new Vector3(b.center.x, b.max.y, b.center.z);
+            }
+
             Renderer[] rs = anchor.GetComponentsInChildren<Renderer>();
             if (rs.Length == 0) return Vector3.up * ringOffset;
             bool has = false;
@@ -196,7 +246,7 @@ namespace Game.Ship
             _animLocal = targetLocal;
             Vector3 top = ropeTop.position;
             _bob = _bobPrev = top + Vector3.down * Vector3.Distance(top, CarriedRingWorld());
-            if (_line == null) return;
+            if (_points == null) return;
             for (int i = 0; i < _points.Length; i++)
                 _points[i] = _prev[i] = Vector3.Lerp(top, _bob, i / (_points.Length - 1f));
             for (int k = 0; k < 90; k++) SimulateRope(1f / 60f);
@@ -213,7 +263,8 @@ namespace Game.Ship
             return _water != null ? _water.SurfaceY : float.NaN;
         }
 
-        // Swap the editor's rigid cylinder for a world-space line the sim can bend.
+        // Swap the editor's rigid cylinder for a bendable visual: pooled rigid chain
+        // pieces when a chain prefab is wired, a world-space line otherwise.
         private void BuildRopeLine()
         {
             if (rope == null || ropeTop == null || anchor == null) return;
@@ -222,19 +273,109 @@ namespace Game.Ship
             Destroy(rope.GetComponent<MeshFilter>());
             if (meshRenderer != null) Destroy(meshRenderer);
 
-            _line = rope.gameObject.AddComponent<LineRenderer>();
-            _line.useWorldSpace = true;
-            _line.positionCount = ropeSegments;
-            _line.widthMultiplier = ropeWidth;
-            _line.numCapVertices = 2;
-            _line.numCornerVertices = 2;
-            if (mat != null) _line.sharedMaterial = mat;
+            if (chainPrefab != null)
+            {
+                BuildChain();
+            }
+            else
+            {
+                _line = rope.gameObject.AddComponent<LineRenderer>();
+                _line.useWorldSpace = true;
+                _line.positionCount = ropeSegments;
+                _line.widthMultiplier = ropeWidth;
+                _line.numCapVertices = 2;
+                _line.numCornerVertices = 2;
+                if (mat != null) _line.sharedMaterial = mat;
+            }
 
             _points = new Vector3[ropeSegments];
             _prev = new Vector3[ropeSegments];
             Vector3 top = ropeTop.position;
             for (int i = 0; i < ropeSegments; i++)
                 _points[i] = _prev[i] = Vector3.Lerp(top, _bob, i / (ropeSegments - 1f));
+        }
+
+        // Pool of rigid chain pieces, and the prefab's own geometry measured so the code
+        // adapts to any strip: the longest mesh axis is the run direction, its sign taken
+        // from where the volume sits relative to the pivot.
+        private void BuildChain()
+        {
+            // Pieces parent to the station itself — NEVER the rope placeholder, whose
+            // authored non-uniform scale (thin stretched cylinder) would crush them.
+            var probe = Instantiate(chainPrefab, transform);
+            foreach (Collider c in probe.GetComponentsInChildren<Collider>(true))
+                Destroy(c);
+            var mf = probe.GetComponentInChildren<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+            {
+                Bounds b = mf.sharedMesh.bounds;
+                int axis = b.size.y >= b.size.x && b.size.y >= b.size.z ? 1
+                         : b.size.z >= b.size.x ? 2 : 0;
+                _chainLen = b.size[axis] * Mathf.Abs(mf.transform.lossyScale[axis])
+                    / Mathf.Max(1e-4f, Mathf.Abs(transform.lossyScale[axis]));
+                Vector3 dir = Vector3.zero;
+                dir[axis] = Mathf.Sign(b.center[axis]);
+                _chainHangAxis = dir;
+            }
+
+            _chain = new Transform[MaxChainPieces];
+            _chain[0] = probe.transform;
+            for (int i = 1; i < MaxChainPieces; i++)
+            {
+                var piece = Instantiate(chainPrefab, transform);
+                foreach (Collider c in piece.GetComponentsInChildren<Collider>(true))
+                    Destroy(c);
+                _chain[i] = piece.transform;
+            }
+            int lengthAxis = Mathf.Abs(_chainHangAxis.y) > 0.5f ? 1
+                           : Mathf.Abs(_chainHangAxis.z) > 0.5f ? 2 : 0;
+            foreach (Transform t in _chain)
+            {
+                Vector3 s = Vector3.one * chainThickness;
+                s[lengthAxis] = 1f;
+                t.localScale = Vector3.Scale(t.localScale, s);
+                t.gameObject.SetActive(false);
+            }
+        }
+
+        // Rigid pieces laid chord-to-chord along the simulated curve at their natural
+        // length — chain never stretches; the last piece overruns into the anchor's stock
+        // instead, which is exactly how the Synty deco chains meet geometry.
+        private void LayChain()
+        {
+            int n = _points.Length;
+            float total = 0f;
+            for (int i = 0; i < n - 1; i++) total += Vector3.Distance(_points[i], _points[i + 1]);
+            int pieces = Mathf.Clamp(Mathf.CeilToInt(total / Mathf.Max(0.05f, _chainLen)), 1, _chain.Length);
+
+            for (int k = 0; k < _chain.Length; k++)
+            {
+                bool on = k < pieces;
+                if (_chain[k].gameObject.activeSelf != on) _chain[k].gameObject.SetActive(on);
+                if (!on) continue;
+
+                Vector3 p0 = SampleArc(k * _chainLen, total);
+                Vector3 toward = SampleArc(Mathf.Min((k + 1) * _chainLen, total), total) - p0;
+                if (toward.sqrMagnitude < 1e-6f) toward = _bob - p0;
+                if (toward.sqrMagnitude < 1e-6f) toward = Vector3.down;
+                Quaternion swing = Quaternion.FromToRotation(_chainHangAxis, toward.normalized);
+                _chain[k].SetPositionAndRotation(p0,
+                    swing * Quaternion.AngleAxis(k * 90f, _chainHangAxis));
+            }
+        }
+
+        // Point on the verlet polyline at the given arc length from the cathead.
+        private Vector3 SampleArc(float arc, float total)
+        {
+            if (arc <= 0f) return _points[0];
+            if (arc >= total) return _points[_points.Length - 1];
+            for (int i = 0; i < _points.Length - 1; i++)
+            {
+                float seg = Vector3.Distance(_points[i], _points[i + 1]);
+                if (arc <= seg) return Vector3.Lerp(_points[i], _points[i + 1], seg < 1e-5f ? 0f : arc / seg);
+                arc -= seg;
+            }
+            return _points[_points.Length - 1];
         }
 
         // Classic verlet rope: integrate the free points, pin the ends to the cathead and
@@ -274,7 +415,23 @@ namespace Game.Ship
                 _points[0] = top;
                 _points[n - 1] = ring;
             }
-            _line.SetPositions(_points);
+            if (_line != null)
+            {
+                _line.enabled = !_hideRig;
+                if (!_hideRig) _line.SetPositions(_points);
+            }
+            else if (_chain != null)
+            {
+                if (_hideRig)
+                {
+                    foreach (Transform t in _chain)
+                        if (t.gameObject.activeSelf) t.gameObject.SetActive(false);
+                }
+                else
+                {
+                    LayChain();
+                }
+            }
         }
     }
 }

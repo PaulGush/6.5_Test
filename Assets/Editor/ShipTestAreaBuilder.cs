@@ -37,6 +37,21 @@ namespace Game.EditorTools
         private const string MediumAttachmentsPath = SyntyRoot + "/Vehicles/SM_Veh_Boat_Medium_01_Hull_Attachments.prefab";
         private const string WheelFallbackPath = SyntyRoot + "/Props/SM_Prop_ShipWheel_01.prefab";
         private const string AnchorPropPath = SyntyRoot + "/Props/SM_Prop_Anchor_01.prefab";
+        private const string ChainLinkPropPath =
+            "Assets/Synty/PolygonGeneric/Prefabs/Props/SM_Gen_Prop_Chain_01.prefab";
+        // The warship hull with its baked port-bow anchor cut into a separate mesh
+        // (produced by the bpy cut script; see repo history). The pivot of the anchor
+        // piece sits at its ring, at this position in the hull's local space.
+        private const string HullSplitFbxPath = "Assets/Art/Models/WarshipHullSplit.fbx";
+        private const string HullMeshName = "SM_Veh_Boat_Warship_01_Hull";
+        // Starboard bow, in Unity hull space (Unity's FBX import mirrors X vs the raw
+        // mesh data). Pivot = the anchor's ring loop; the quat re-creates the authored
+        // draped lean from the canonical ring-up mesh. Values printed by the cut script.
+        private static readonly Vector3 BowAnchorPivotLocal = new Vector3(3.035f, 6.011f, 10.081f);
+        private static readonly Quaternion BowAnchorDrapeRot = new Quaternion(0.54071f, 0f, 0.16865f, 0.82413f);
+        // Where the hull's baked deco chain terminates (the hawse at the bow stem):
+        // the runtime chain pays out from here, so a drop reads as THAT chain running.
+        private static readonly Vector3 BowHawseLocal = new Vector3(2.45f, 5.2f, 10.86f);
 
         private const string WaterMatPath = "Assets/Art/Materials/Sea_Water.mat";
         private const string SeaMeshPath = "Assets/Art/Models/SeaGrid.asset";
@@ -943,6 +958,11 @@ namespace Game.EditorTools
             rope.transform.localScale = new Vector3(0.08f, run.magnitude * 0.5f, 0.08f);
 
             view.SetRope(rope.transform, top.transform);
+
+            // An anchor hangs from chain, not rope: with the strip prefab wired, the view
+            // replaces the line with rigid chain pieces laid along the simulated curve.
+            var chainAsset = AssetDatabase.LoadAssetAtPath<GameObject>(ChainLinkPropPath);
+            if (chainAsset != null) view.SetChain(chainAsset);
         }
 
         // One-shot (EditorPrefs-keyed, so re-enabling by hand sticks): the sailing slice
@@ -1283,6 +1303,169 @@ namespace Game.EditorTools
             ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
                           : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
             PatchPrefabAnchorStation(spec);
+            PatchPrefabAnchorChain(spec);
+            PatchPrefabHullAnchor(spec);
+        }
+
+        // The ship's own baked bow anchor becomes THE anchor: swap the hull mesh for the
+        // split variant (an override on the nested Synty prefab instance — the Synty
+        // asset itself stays untouched), hang the cut anchor piece from the rail above
+        // its authored spot, and remove the builder's cathead + prop rig. In-place
+        // patch; hand-adjusted colliders untouched. Idempotent via the BowAnchor node.
+        private static void PatchPrefabHullAnchor(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null) return;
+            if (FindDeep(asset.transform, "BowAnchor") != null)
+            {
+                FixupHawsePoint(path); // already split: just make sure the pay-out point is right
+                return;
+            }
+
+            Mesh hullNoAnchor = null, bowAnchor = null;
+            foreach (Object o in AssetDatabase.LoadAllAssetsAtPath(HullSplitFbxPath))
+            {
+                if (o is Mesh m)
+                {
+                    if (m.name == "Warship_Hull_NoAnchor") hullNoAnchor = m;
+                    if (m.name == "Warship_BowAnchor") bowAnchor = m;
+                }
+            }
+            if (hullNoAnchor == null || bowAnchor == null) return; // split FBX not imported yet
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                MeshFilter hullMf = contents.GetComponentsInChildren<MeshFilter>(true)
+                    .FirstOrDefault(mf => mf.sharedMesh != null && mf.sharedMesh.name == HullMeshName);
+                var view = contents.GetComponentInChildren<ShipAnchorView>(true);
+                if (hullMf == null || view == null) return; // not this ship
+
+                // The cut must be the same hull at the same scale, or bail loudly.
+                float oldSize = hullMf.sharedMesh.bounds.size.magnitude;
+                float newSize = hullNoAnchor.bounds.size.magnitude;
+                if (Mathf.Abs(oldSize - newSize) / oldSize > 0.02f)
+                {
+                    Debug.LogError($"[ShipTestAreaBuilder] Hull split mesh scale mismatch " +
+                                   $"({newSize:F1} vs {oldSize:F1}); hull anchor patch aborted.");
+                    return;
+                }
+
+                hullMf.sharedMesh = hullNoAnchor;
+
+                Transform station = view.transform;
+                Transform oldProp = station.Find("AnchorProp");
+                Transform cathead = station.Find("Cathead");
+                if (oldProp != null) Object.DestroyImmediate(oldProp.gameObject);
+                if (cathead != null) Object.DestroyImmediate(cathead.gameObject);
+
+                var bow = new GameObject("BowAnchor");
+                bow.transform.SetParent(station, false);
+                bow.transform.position = hullMf.transform.TransformPoint(BowAnchorPivotLocal);
+                bow.transform.rotation = hullMf.transform.rotation * BowAnchorDrapeRot;
+                bow.AddComponent<MeshFilter>().sharedMesh = bowAnchor;
+                bow.AddComponent<MeshRenderer>().sharedMaterials =
+                    hullMf.GetComponent<MeshRenderer>().sharedMaterials;
+                view.SetAnchor(bow.transform);
+
+                // The chain now pays out from the rail directly above the hawse, where
+                // the hull's baked deco chain run ends.
+                Transform top = station.Find("AnchorRopeTop");
+                if (top != null)
+                    top.position = hullMf.transform.TransformPoint(BowHawseLocal);
+
+                // Repose the editor's placeholder cylinder along the new short span so the
+                // scene view doesn't show a stale rig; runtime replaces it with chain.
+                Transform ropeT = station.Find("AnchorRope");
+                if (ropeT != null && top != null)
+                {
+                    Vector3 ring = bow.transform.position;
+                    Vector3 run = top.position - ring;
+                    ropeT.position = ring + run * 0.5f;
+                    ropeT.rotation = Quaternion.FromToRotation(Vector3.up, run.normalized);
+                    ropeT.localScale = new Vector3(0.06f, Mathf.Max(0.05f, run.magnitude * 0.5f), 0.06f);
+                }
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: hull anchor is now the working anchor " +
+                          "(hull mesh split override, cathead rig removed, colliders untouched).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Second-stage fixup for prefabs patched with earlier constants: put the anchor
+        // and the chain's pay-out point on the starboard bow where the baked chain
+        // actually is, in the authored drape pose. Idempotent by position.
+        private static void FixupHawsePoint(string path)
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            MeshFilter hullMfProbe = asset.GetComponentsInChildren<MeshFilter>(true)
+                .FirstOrDefault(mf => mf.sharedMesh != null && mf.sharedMesh.name == "Warship_Hull_NoAnchor");
+            Transform bowProbe = FindDeep(asset.transform, "BowAnchor");
+            if (hullMfProbe == null || bowProbe == null) return;
+            Vector3 wantBow = hullMfProbe.transform.TransformPoint(BowAnchorPivotLocal);
+            if ((bowProbe.position - wantBow).sqrMagnitude < 0.005f) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                MeshFilter mf = contents.GetComponentsInChildren<MeshFilter>(true)
+                    .First(f => f.sharedMesh != null && f.sharedMesh.name == "Warship_Hull_NoAnchor");
+                Transform bow = FindDeep(contents.transform, "BowAnchor");
+                Transform top = FindDeep(contents.transform, "AnchorRopeTop");
+                bow.position = mf.transform.TransformPoint(BowAnchorPivotLocal);
+                bow.rotation = mf.transform.rotation * BowAnchorDrapeRot;
+                if (top != null) top.position = mf.transform.TransformPoint(BowHawseLocal);
+                Transform ropeT = FindDeep(contents.transform, "AnchorRope");
+                if (ropeT != null && top != null)
+                {
+                    Vector3 run = top.position - bow.position;
+                    ropeT.position = bow.position + run * 0.5f;
+                    ropeT.rotation = Quaternion.FromToRotation(Vector3.up, run.normalized);
+                    ropeT.localScale = new Vector3(0.06f, Mathf.Max(0.05f, run.magnitude * 0.5f), 0.06f);
+                }
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: bow anchor moved to the starboard " +
+                          "hawse with the authored drape pose (in-place fixup).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Migration for ships whose anchor station predates the chain: wire the chain
+        // strip prefab into the existing ShipAnchorView, in place — never a rebuild
+        // (hand-adjusted colliders on the ship prefabs must survive).
+        private static void PatchPrefabAnchorChain(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var view = asset != null ? asset.GetComponentInChildren<ShipAnchorView>(true) : null;
+            if (view == null) return;
+            var probe = new SerializedObject(view).FindProperty("chainPrefab");
+            if (probe == null || probe.objectReferenceValue != null) return;
+            var chainAsset = AssetDatabase.LoadAssetAtPath<GameObject>(ChainLinkPropPath);
+            if (chainAsset == null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var so = new SerializedObject(contents.GetComponentInChildren<ShipAnchorView>(true));
+                so.FindProperty("chainPrefab").objectReferenceValue = chainAsset;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: anchor rope swapped for chain links " +
+                          "(in-place patch, colliders untouched).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
         }
 
         /// <summary>
