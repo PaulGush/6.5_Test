@@ -1636,7 +1636,7 @@ namespace Game.EditorTools
 
             var harbor = new GameObject("Harbor");
 
-            // Water surface (visual only — no collider, you fall through into the hazard).
+            // Water surface (visual only — no collider, you fall through and swim).
             var water = GameObject.CreatePrimitive(PrimitiveType.Plane);
             water.name = "Water";
             Object.DestroyImmediate(water.GetComponent<Collider>());
@@ -1646,16 +1646,6 @@ namespace Game.EditorTools
             water.AddComponent<WaterSurface>(); // runtime "where is the surface" marker
             water.GetComponent<MeshRenderer>().sharedMaterial = GetOrCreateMaterial(
                 WaterMatPath, new Color(0.09f, 0.32f, 0.42f), 0.85f);
-
-            // Drowning: touching the water sends you back to your checkpoint.
-            var hazard = new GameObject("WaterHazard");
-            hazard.transform.SetParent(harbor.transform, false);
-            hazard.transform.position = new Vector3(0f, waterY - 1.8f, -70f);
-            var hazardBox = hazard.AddComponent<BoxCollider>();
-            hazardBox.isTrigger = true;
-            hazardBox.size = new Vector3(180f, 3f, 180f); // reaches past the origin dock
-
-            hazard.AddComponent<HazardVolume>();
 
             // Raised dock with stairs from the shore, plus checkpoint.
             BuildDock(harbor);
@@ -1689,7 +1679,7 @@ namespace Game.EditorTools
             Debug.Log($"[ShipTestAreaBuilder] Harbor placed: water y={waterY:F2}, ship y={shipY:F2}, dock top y={DockTopY:F2}.");
         }
 
-        /// <summary>Raised dock platform + the drowning checkpoint. Centred on the origin —
+        /// <summary>Raised dock platform + the dock checkpoint. Centred on the origin —
         /// it is the spawn floor now that the shore course is gone — and wide enough that
         /// every spawn point lands on the planks.</summary>
         private static void BuildDock(GameObject harbor)
@@ -1703,7 +1693,7 @@ namespace Game.EditorTools
             dock.transform.localScale = new Vector3(DockEdgeX * 2f, 0.5f, 16.9f);
             dock.GetComponent<MeshRenderer>().sharedMaterial = wood;
 
-            // Checkpoint on the dock so drowning doesn't dump you somewhere else.
+            // Checkpoint on the dock so respawns don't dump you somewhere else.
             var checkpoint = new GameObject("DockCheckpoint");
             checkpoint.transform.SetParent(harbor.transform, false);
             checkpoint.transform.position = new Vector3(0f, DockTopY + 1.1f, DockCenterZ - 3.45f);
@@ -1741,7 +1731,7 @@ namespace Game.EditorTools
                 WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
         }
 
-        /// <summary>Sets the harbor's water (and drown hazard) to the moored ship's waterline —
+        /// <summary>Sets the harbor's water to the moored ship's waterline —
         /// the deck always boards flush with the dock, so it's the water that adapts to each
         /// hull's proportions (e.g. the warship rides high to keep its gun ports dry).</summary>
         private static void UpdateWaterLevel(GameObject harbor, BuildResult result, ShipSpec spec)
@@ -1754,9 +1744,6 @@ namespace Game.EditorTools
             Transform water = harbor.transform.Find("Water");
             if (water != null)
                 water.position = new Vector3(water.position.x, waterY, water.position.z);
-            Transform hazard = harbor.transform.Find("WaterHazard");
-            if (hazard != null)
-                hazard.position = new Vector3(hazard.position.x, waterY - 1.8f, hazard.position.z);
             Debug.Log($"[ShipTestAreaBuilder] Waterline set to y={waterY:F2} for {spec.prefabName}.");
         }
 
@@ -1968,22 +1955,11 @@ namespace Game.EditorTools
             if (harbor.transform.Find("DockPiles") == null)
                 BuildDockPiles(harbor);
 
-            // The drown hazard was sized for the open water south of the dock; stretch it
-            // north so the island's coastal shallows drown too.
-            Transform hazard = harbor.transform.Find("WaterHazard");
-            var hazardBox = hazard != null ? hazard.GetComponent<BoxCollider>() : null;
-            if (hazardBox != null)
-            {
-                hazard.position = new Vector3(0f, hazard.position.y, -42.5f);
-                hazardBox.size = new Vector3(180f, 3f, 235f);
-            }
-
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
             AssetDatabase.SaveAssets();
             Debug.Log("[ShipTestAreaBuilder] Start island raised behind the dock: sand mesh + " +
-                      "collider, beach ramp over the dock's north end, palms and dressing; " +
-                      "drown hazard stretched to its shores.");
+                      "collider, beach ramp over the dock's north end, palms and dressing.");
         }
 
         // Radial sand mound: rings out to the coastline-plus-skirt, heights from the shared
@@ -2837,16 +2813,6 @@ namespace Game.EditorTools
             if (startRenderer != null) startRenderer.sharedMaterial = terrain;
 
             new GameObject($"ArchTag_v{ArchipelagoVersion}").transform.SetParent(root.transform, false);
-
-            // Drown hazard grows to cover the whole sailing area, islands included (their
-            // land stands above its top; only real water depth triggers it).
-            Transform hazard = harbor.transform.Find("WaterHazard");
-            var hazardBox = hazard != null ? hazard.GetComponent<BoxCollider>() : null;
-            if (hazardBox != null)
-            {
-                hazard.position = new Vector3(0f, hazard.position.y, -300f);
-                hazardBox.size = new Vector3(2000f, 3f, 1600f);
-            }
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
