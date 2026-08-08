@@ -20,6 +20,8 @@ namespace Game.Gameplay
         [SerializeField] private Color waterColor = new Color(0.05f, 0.22f, 0.33f);
         [Tooltip("Exponential-squared fog density while submerged (~0.06 = 20 m visibility).")]
         [SerializeField] private float fogDensity = 0.06f;
+        [Tooltip("Keep the camera at least this far above or below the animated surface. A camera sitting inside the wave band (e.g. inside a crest at grazing angles) renders a half-submerged mess: dark sky over a top-lit sea.")]
+        [SerializeField] private float surfaceClearance = 0.22f;
 
         private WaterSurface _water;
         private float _nextWaterScan;
@@ -55,8 +57,18 @@ namespace Game.Gameplay
             bool under = false;
             if (_water != null && cam != null)
             {
+                // Runs after Cinemachine has placed the camera (execution order 300):
+                // shove the final position out of the wave band so a frame is always
+                // cleanly above or cleanly below the surface, then judge fog by side.
                 Vector3 p = cam.transform.position;
-                under = p.y < _water.HeightAt(p.x, p.z);
+                float surface = _water.HeightAt(p.x, p.z);
+                float d = p.y - surface;
+                if (Mathf.Abs(d) < surfaceClearance)
+                {
+                    p.y = surface + (d >= 0f ? surfaceClearance : -surfaceClearance);
+                    cam.transform.position = p;
+                }
+                under = p.y < surface;
             }
 
             if (under == _submerged) return;

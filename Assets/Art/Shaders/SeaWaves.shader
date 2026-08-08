@@ -23,6 +23,8 @@ Shader "Sea/Waves"
         _FoamColor("Foam Color", Color) = (0.93, 0.97, 0.97, 1)
         _FoamWidth("Foam Contact Width (m)", Float) = 0.85
         _FoamNoiseScale("Foam Noise Scale (1/m)", Float) = 2.6
+        _FacetFadeStart("Facet Shading Fade Start (m)", Float) = 18
+        _FacetFadeEnd("Facet Shading Fade End (m)", Float) = 55
     }
     SubShader
     {
@@ -61,6 +63,8 @@ Shader "Sea/Waves"
             half4 _FoamColor;
             float _FoamWidth;
             float _FoamNoiseScale;
+            float _FacetFadeStart;
+            float _FacetFadeEnd;
             CBUFFER_END
 
             struct Attributes
@@ -136,8 +140,12 @@ Shader "Sea/Waves"
                 // Displacement fades with camera distance: past the fade the mesh cells are
                 // bigger than the waves, and undersampled waves alias into smeared streaks.
                 // Distant water is calm and flat instead — it is sub-pixel from deck height.
-                float detail = 1.0 - smoothstep(_DetailFadeStart, _DetailFadeEnd,
-                    distance(pw.xz, _WorldSpaceCameraPos.xz));
+                // 3D distance (not XZ) so a top-down camera doesn't carry full detail out
+                // to a fixed radius, and a noise-jittered edge so the transition never
+                // traces a readable circle around the camera's nadir.
+                float fadeJitter = (VNoise(pw.xz * 0.013) - 0.5) * 60.0;
+                float detail = 1.0 - smoothstep(_DetailFadeStart + fadeJitter, _DetailFadeEnd + fadeJitter,
+                    distance(pw, _WorldSpaceCameraPos));
                 off *= detail;
 
                 pw += off;
@@ -155,6 +163,21 @@ Shader "Sea/Waves"
                 // Flat facet normal from derivatives; winding differs per platform, so keep it up.
                 float3 n = normalize(cross(ddy(IN.positionWS), ddx(IN.positionWS)));
                 n = n.y >= 0 ? n : -n;
+                // Chunky facet lighting is the style up close, but at distance the facets
+                // are smaller than pixels and per-facet shading turns the disc mesh's
+                // ring/arc topology into pinwheel + circle moire (blatant from top-down).
+                // Fade to the analytic up-normal well before the displacement fades; the
+                // swell stays visible through the height color ramp and silhouette.
+                // Jittered like the displacement fade, so the transition band never forms
+                // a coherent ring of half-faceted spokes around the camera.
+                float facetJitter = (VNoise(IN.positionWS.xz * 0.041) - 0.5) * 16.0;
+                float facetFade = 1.0 - smoothstep(_FacetFadeStart + facetJitter, _FacetFadeEnd + facetJitter,
+                    distance(IN.positionWS, _WorldSpaceCameraPos));
+                // The disc mesh's apex rides at the camera's XZ (SeaFollowView), and its
+                // centre slivers are sub-pixel from ANY height — smooth the small patch
+                // around the camera column too, or a mini pinwheel sits at the nadir.
+                facetFade *= smoothstep(1.2, 3.5, distance(IN.positionWS.xz, _WorldSpaceCameraPos.xz));
+                n = normalize(lerp(float3(0, 1, 0), n, facetFade));
 
                 Light light = GetMainLight();
                 half3 base = lerp(_DeepColor.rgb, _ShallowColor.rgb, IN.height);
@@ -170,7 +193,11 @@ Shader "Sea/Waves"
 
                 float3 v = normalize(GetWorldSpaceViewDir(IN.positionWS));
                 float3 h = normalize(light.direction + v);
-                lit += light.color * _SpecStrength * pow(saturate(dot(n, h)), 64);
+                // Fresnel: water reflects at grazing angles, barely from above. Without
+                // this, the smoothed far field turns the sun glint into one huge soft
+                // blob when the camera looks straight down.
+                float fres = 0.05 + 0.95 * pow(1.0 - saturate(dot(n, v)), 5.0);
+                lit += light.color * _SpecStrength * fres * pow(saturate(dot(n, h)), 64);
 
                 // Contact foam: where something opaque sits near the WATERLINE behind this
                 // water pixel (hull, rock, shoreline, a swimmer), lick a noisy white band
