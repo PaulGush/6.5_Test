@@ -165,6 +165,7 @@ namespace Game.EditorTools
                 EnsureDockShoreStairsOnce();
                 EnsureDockPilesOnce();
                 EnsureArchipelagoOnce();
+                EnsureSharksOnce();
                 EnsureShipMoored();
                 EnsureDayNightOnce();
                 EnsureSkyOnce();
@@ -2775,6 +2776,99 @@ namespace Game.EditorTools
                     AssetDatabase.DeleteAsset(path);
             }
             BuildArchipelago(harbor);
+        }
+
+        private const string SharkPrefabPath = SyntyRoot + "/Characters/SM_Shark_01.prefab";
+        private const int SharksVersion = 3; // bump when circuits/counts change
+
+        private static void EnsureSharksOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            Transform existing = harbor.transform.Find("Sharks");
+            if (existing != null && existing.Find($"SharkTag_v{SharksVersion}") != null) return;
+            RebuildSharks(harbor);
+        }
+
+        [MenuItem("Tools/Ship/Rebuild Sharks")]
+        public static void RebuildSharksMenu()
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null)
+            {
+                Debug.LogError("[ShipTestAreaBuilder] No Harbor in the scene — run Tools > Ship > Build Ship Test Area first.");
+                return;
+            }
+            RebuildSharks(harbor);
+        }
+
+        // Ambient sharks on fixed open-water circuits (SharkView drives them off the synced
+        // wave clock at runtime, so peers agree without networking). Circuits are chosen so
+        // circle + breathing radius stays clear of every island's coast and the dock.
+        private static void RebuildSharks(GameObject harbor)
+        {
+            Transform old = harbor.transform.Find("Sharks");
+            if (old != null) Object.DestroyImmediate(old.gameObject);
+
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(SharkPrefabPath);
+            if (prefab == null)
+            {
+                Debug.LogWarning($"[ShipTestAreaBuilder] Shark prefab missing at {SharkPrefabPath}; no sharks built.");
+                return;
+            }
+
+            var root = new GameObject("Sharks");
+            root.transform.SetParent(harbor.transform, false);
+
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0f;
+
+            (Vector2 c, float r, int n)[] zones =
+            {
+                (new Vector2(35f, -95f), 18f, 2),    // harbor mouth, past the rock slalom
+                (new Vector2(-60f, -140f), 20f, 1),  // Serpent-BareKnuckle gap
+                (new Vector2(140f, -160f), 22f, 1),  // south of Riverrun
+                (new Vector2(0f, -320f), 30f, 2),    // open sea, mid-map
+                (new Vector2(310f, -360f), 22f, 1),  // off Grande's west coast
+                (new Vector2(-330f, -300f), 22f, 1), // off Westwatch's east coast
+                (new Vector2(40f, -490f), 25f, 1),   // north of Longreach
+            };
+
+            int k = 0;
+            foreach ((Vector2 c, float r, int n) in zones)
+                for (int i = 0; i < n; i++, k++)
+                {
+                    var shark = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                    shark.name = $"Shark_{k:00}";
+                    shark.transform.SetParent(root.transform, false);
+                    // Parked roughly on its circuit for the scene view; SharkView owns it in play.
+                    shark.transform.position = new Vector3(c.x + r, waterY - 0.75f, c.y);
+
+                    // Networked scene object (like the moored ship): the server owns shark
+                    // movement so chases are authoritative, and the NetworkTransform
+                    // replicates it. Mirror does NOT auto-add the identity — add it first.
+                    shark.AddComponent<Mirror.NetworkIdentity>();
+                    var view = shark.AddComponent<SharkView>();
+                    shark.AddComponent<Mirror.NetworkTransformReliable>();
+                    var so = new SerializedObject(view);
+                    so.FindProperty("center").vector2Value = c;
+                    so.FindProperty("radius").floatValue = r * (1f - 0.18f * i); // ring-in cohabitants
+                    so.FindProperty("speed").floatValue = 1.9f + 0.5f * Hash01(k * 3.7f, 1.1f);
+                    so.FindProperty("phase").floatValue = k * 2.399f; // golden-angle spread
+                    so.FindProperty("seed").floatValue = k;
+                    so.ApplyModifiedPropertiesWithoutUndo();
+                }
+
+            new GameObject($"SharkTag_v{SharksVersion}").transform.SetParent(root.transform, false);
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log($"[ShipTestAreaBuilder] {k} sharks released across {zones.Length} circuits.");
         }
 
         private static void BuildArchipelago(GameObject harbor)
