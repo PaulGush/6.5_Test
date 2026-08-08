@@ -71,6 +71,14 @@ namespace Game.Player
         [SyncVar] private byte poseFlags = 1;
         [SyncVar] private byte crouchByte;
 
+        // Read by client-side views (e.g. footsteps): motion measured from the
+        // replicated transform plus the synced pose flags, valid on every client.
+        public float PlanarSpeed => _planarSpeed;
+        public float CrouchBlend01 => _crouch;
+        public bool GroundedFlag => (poseFlags & 1) != 0;
+        public bool SwimmingFlag => (poseFlags & 4) != 0;
+        public bool DeadFlag => (poseFlags & 8) != 0;
+
         private PlayerController _controller;
         private NetworkPlayer _networkPlayer;
         private Game.Gameplay.PlayerGrabber _grabber;

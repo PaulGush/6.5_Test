@@ -22,6 +22,7 @@ GameObject:
   - component: {fileID: 4039947115254705632}
   - component: {fileID: 8931706958247822987}
   - component: {fileID: 771238114592837401}
+  - component: {fileID: 771238114592837402}
   m_Layer: 8
   m_Name: Player
   m_TagString: Untagged
@@ -311,6 +312,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b3f9d1c27a8e4b5f9d0c3a6e8f2b7d15, type: 3}
   m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerRagdollView
+--- !u!114 &771238114592837402
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e7a41c9350b64d2f8a1c5b9e3d7f0a26, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerFootstepsView
   blendRate: 3
 --- !u!114 &8931706958247822987
 MonoBehaviour:
