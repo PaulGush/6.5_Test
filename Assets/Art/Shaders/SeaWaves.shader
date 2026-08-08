@@ -28,6 +28,7 @@ Shader "Sea/Waves"
         {
             Name "Forward"
             Tags { "LightMode"="UniversalForward" }
+            Cull Off // the surface must also render as a ceiling when the camera swims under it
 
             HLSLPROGRAM
             #pragma vertex vert
@@ -139,7 +140,7 @@ Shader "Sea/Waves"
                 return OUT;
             }
 
-            half4 frag(Varyings IN) : SV_Target
+            half4 frag(Varyings IN, half facing : VFACE) : SV_Target
             {
                 // Flat facet normal from derivatives; winding differs per platform, so keep it up.
                 float3 n = normalize(cross(ddy(IN.positionWS), ddx(IN.positionWS)));
@@ -160,6 +161,9 @@ Shader "Sea/Waves"
                 float3 v = normalize(GetWorldSpaceViewDir(IN.positionWS));
                 float3 h = normalize(light.direction + v);
                 lit += light.color * _SpecStrength * pow(saturate(dot(n, h)), 64);
+
+                // Seen from below (swimming), the same surface reads as a dimmer ceiling.
+                if (facing < 0) lit *= 0.55;
 
                 lit = MixFog(lit, IN.fogFactor);
                 return half4(lit, 1);
