@@ -20,10 +20,16 @@ Shader "Sea/Waves"
         _DetailFadeStart("Detail Fade Start (m)", Float) = 60
         _DetailFadeEnd("Detail Fade End (m)", Float) = 160
         _SpecStrength("Sun Glint", Range(0, 1)) = 0.35
+        _FoamColor("Foam Color", Color) = (0.93, 0.97, 0.97, 1)
+        _FoamWidth("Foam Contact Width (m)", Float) = 0.85
+        _FoamNoiseScale("Foam Noise Scale (1/m)", Float) = 2.6
     }
     SubShader
     {
-        Tags { "RenderType"="Opaque" "RenderPipeline"="UniversalPipeline" "Queue"="Geometry" }
+        // Transparent queue (still opaque-rendered with depth write): the surface must
+        // draw AFTER the depth texture is ready so contact foam can compare against
+        // every opaque — hulls, rocks, shorelines, the player treading water.
+        Tags { "RenderType"="Opaque" "RenderPipeline"="UniversalPipeline" "Queue"="Transparent" }
         Pass
         {
             Name "Forward"
@@ -36,6 +42,7 @@ Shader "Sea/Waves"
             #pragma multi_compile_fog
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
             half4 _ShallowColor;
@@ -51,6 +58,9 @@ Shader "Sea/Waves"
             float _DetailFadeStart;
             float _DetailFadeEnd;
             float _SpecStrength;
+            half4 _FoamColor;
+            float _FoamWidth;
+            float _FoamNoiseScale;
             CBUFFER_END
 
             struct Attributes
@@ -161,6 +171,50 @@ Shader "Sea/Waves"
                 float3 v = normalize(GetWorldSpaceViewDir(IN.positionWS));
                 float3 h = normalize(light.direction + v);
                 lit += light.color * _SpecStrength * pow(saturate(dot(n, h)), 64);
+
+                // Contact foam: where something opaque sits near the WATERLINE behind this
+                // water pixel (hull, rock, shoreline, a swimmer), lick a noisy white band
+                // around it. Depth texture holds all opaques because we draw in the
+                // transparent queue. The gap is measured VERTICALLY (reconstructed world
+                // height vs this fragment's wave height), not along the view ray — a
+                // ray-depth test inflates into a ghostly full-body halo around thin
+                // shapes like a swimmer at grazing angles.
+                if (facing >= 0)
+                {
+                    float2 uv = IN.positionCS.xy / _ScaledScreenParams.xy;
+                    float raw = SampleSceneDepth(uv);
+                    #if !UNITY_REVERSED_Z
+                        // OpenGL: depth buffer is 0..1 but clip z is -1..1; remap before
+                        // reconstruction or every point lands nowhere near the surface.
+                        raw = lerp(UNITY_NEAR_CLIP_VALUE, 1, raw);
+                    #endif
+                    float3 scenePos = ComputeWorldSpacePosition(uv, raw, UNITY_MATRIX_I_VP);
+                    // Vertical gap to the geometry below the surface. Two foam terms:
+                    // a crisp lick confined to the waterline crossing itself, and a wide
+                    // soft wash that is heavily noise-broken and never saturates — a
+                    // prone swimmer sits entirely inside the wide band, and a single
+                    // solid band paints the whole body as a white ghost.
+                    float gap = IN.positionWS.y - scenePos.y;
+                    if (gap >= 0 && gap < _FoamWidth)
+                    {
+                        float t = _WaveTime >= 0 ? _WaveTime : _Time.y;
+                        float ts = t * _WaveSpeed;
+                        float fn = VNoise(IN.positionWS.xz * _FoamNoiseScale + float2(0.23, 0.17) * ts)
+                                 + 0.5 * VNoise(IN.positionWS.xz * (_FoamNoiseScale * 2.7) - float2(0.11, 0.29) * ts);
+
+                        // The lick: bright, only within ~18% of the foam width of the line.
+                        float lick = 1.0 - saturate(gap / (_FoamWidth * 0.18));
+                        lick = smoothstep(0.35, 0.8, lick * (0.55 + 0.45 * fn));
+
+                        // The wash: fades with depth, sparse noise peaks only, kept faint —
+                        // it hints at shallows; the churn around swimmers comes from
+                        // particles (PlayerSwimFxView), not from painting the body.
+                        float wash = 1.0 - saturate(gap / _FoamWidth);
+                        wash = smoothstep(0.62, 1.0, wash * (0.35 + 0.65 * fn)) * 0.35;
+
+                        lit = lerp(lit, _FoamColor.rgb * light.color, max(lick, wash));
+                    }
+                }
 
                 // Seen from below (swimming), the same surface reads as a dimmer ceiling.
                 if (facing < 0) lit *= 0.55;
