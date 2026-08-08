@@ -2500,6 +2500,11 @@ namespace Game.EditorTools
                 }
             }
 
+            // Interior floor: the relief must never dig below the sea's reach — an inland
+            // bowl under wave-crest height fills with animated ocean poking up through
+            // the ground. The beach ramp itself is spared (the sea DOES lap the shore).
+            if (s > 0f) h = Mathf.Max(h, Mathf.Min(s * BeachSlope, 1.25f));
+
             foreach (RiverSpec river in spec.rivers)
             {
                 RiverCarveAt(spec, river, x, z, out float edgeDist, out float bed);
@@ -2511,7 +2516,7 @@ namespace Game.EditorTools
 
         // Bump to rebuild every scene's archipelago on the next maintenance pass (layout
         // redesigns, generator changes). Island mesh assets are wiped and regenerated.
-        private const int ArchipelagoVersion = 3;
+        private const int ArchipelagoVersion = 6;
 
         private const string IslandMatPath = "Assets/Art/Materials/Island_Terrain.mat";
 
@@ -2529,6 +2534,230 @@ namespace Game.EditorTools
                 EditorUtility.SetDirty(mat);
             }
             return mat;
+        }
+
+        // A hand-authored story scene: prefab (path under the Synty root), world-axis
+        // offsets from the vignette anchor, yaw, sink into the sand, scale, roll.
+        // Every item samples the terrain height at its own spot, so scenes drape over
+        // the ground instead of floating on a plane.
+        private struct DecoItem
+        {
+            public string path;
+            public float dx, dz, yaw, sink, scale, roll;
+
+            public DecoItem(string path, float dx, float dz, float yaw,
+                float sink = 0.08f, float scale = 1f, float roll = 0f)
+            {
+                this.path = path; this.dx = dx; this.dz = dz;
+                this.yaw = yaw; this.sink = sink; this.scale = scale; this.roll = roll;
+            }
+        }
+
+        private class Vignette
+        {
+            public string island;
+            public float bearingDeg, inland; // anchor: coast bearing + metres inland
+            public DecoItem[] items;
+            // Optional night beacon: a lantern post that auto-lights after dark, so the
+            // scene reads as a point of interest from open water.
+            public bool lantern;
+            public float lanternDx, lanternDz;
+        }
+
+        // One story per island, anchored off the analytic coast (verified against the
+        // height field: flat enough, clear of the rivers). These are what make each
+        // landfall memorable — the scatter is texture, these are destinations.
+        private static readonly Vignette[] Vignettes =
+        {
+            // A trader that didn't make it: bare hull half-sunk on Grande's north shore.
+            new Vignette { island = "Grande", bearingDeg = 355f, inland = -1f, items = new[]
+            {
+                new DecoItem("Vehicles/SM_Veh_Boat_Medium_01_Hull", 0f, 0f, 150f, 1.1f, 1f, 12f),
+                new DecoItem("Props/SM_Prop_Debris_01", 6f, 3f, 40f),
+                new DecoItem("Props/SM_Prop_Debris_02", -5f, 2f, 210f),
+                new DecoItem("Props/SM_Prop_Barrel_02", 4.5f, -2f, 0f, 0.12f),
+                new DecoItem("Props/SM_Prop_Crate_02", -4f, -1.5f, 25f, 0.12f),
+            } },
+            // Smugglers' village on the flat southern shelf: two shanties and a tent
+            // around the old camp. Complete preset buildings — no assembly.
+            new Vignette { island = "Grande", bearingDeg = 166f, inland = 20f,
+                lantern = true, lanternDx = 2.8f, lanternDz = 2.5f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Cuba_Hall_Tower_01", -9f, 8f, 236f, 0.35f),
+                new DecoItem("Buildings/SM_Bld_Shanty_Preset_02", 6f, 4f, 236f, 0.3f),
+                new DecoItem("Buildings/SM_Bld_Shanty_Preset_05", -6f, 5f, 130f, 0.3f),
+                new DecoItem("Buildings/SM_Bld_Tent_02", 4f, -5f, 300f, 0.15f),
+                new DecoItem("Props/SM_Prop_Campfire_Pot_01", 0f, 0f, 0f),
+                new DecoItem("Props/SM_Prop_Bench_01", 0f, -2.2f, 0f),
+                new DecoItem("Props/SM_Prop_Barrel_01", 2f, 0.7f, 0f),
+                new DecoItem("Props/SM_Prop_Barrel_03", 2.5f, -0.5f, 30f),
+                new DecoItem("Props/SM_Prop_Crate_01", -2.1f, 0.9f, 15f),
+                new DecoItem("Props/SM_Prop_Crate_04", -2.5f, -0.7f, 70f),
+                new DecoItem("Props/SM_Prop_Chest_01", 0.5f, 2.4f, 205f),
+                new DecoItem("Props/SM_Prop_BottleTorch_01", 3.2f, -2.2f, 0f),
+                new DecoItem("Props/SM_Prop_BottleTorch_01", -3.2f, -2.4f, 0f),
+            } },
+            // Westwatch earns its name: a gun battery on the summit plateau, aimed to sea.
+            new Vignette { island = "Westwatch", bearingDeg = -95f, inland = 115f,
+                lantern = true, lanternDx = 2.5f, lanternDz = -2f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Fort_Tower_01", -4f, -4f, -95f, 0.25f),
+                new DecoItem("Props/SM_Prop_Cannon_03", 0f, 0f, -95f),
+                new DecoItem("Props/SM_Prop_CannonBalls_01", 1.6f, -1f, 0f),
+                new DecoItem("Props/SM_Prop_Crate_06", -2f, -1.2f, 30f),
+                new DecoItem("Props/SM_Prop_Barrel_05", -2.6f, 0.6f, 0f),
+                new DecoItem("Props/SM_Prop_Campfire_01", 1.5f, 2.3f, 0f),
+                new DecoItem("Props/SM_Prop_BottleTorch_01", 3f, 1f, 0f),
+            } },
+            // A castaway's beached rowboat on Longreach.
+            new Vignette { island = "Longreach", bearingDeg = -60f, inland = 5f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Tent_04", 2f, 4f, 200f, 0.15f),
+                new DecoItem("Vehicles/SM_Veh_Boat_Rowing_01_Hull_Attachments", 0f, 0f, -80f, 0.45f, 1f, 8f),
+                new DecoItem("Props/SM_Prop_Debris_02", 3.4f, 1.2f, 120f),
+                new DecoItem("Props/SM_Prop_Barrel_Half_01", 2.6f, -1.6f, 0f),
+                new DecoItem("Props/SM_Prop_Crate_03", -2.8f, 1f, 45f),
+                new DecoItem("Props/SM_Prop_Campfire_01", -1f, 3f, 0f),
+            } },
+            // Something unwelcoming flanks Serpent's river mouth.
+            new Vignette { island = "Serpent", bearingDeg = 30f, inland = 4f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Rickety_Tower_03", -6f, 9f, 150f, 0.3f),
+                new DecoItem("Props/SM_Prop_BottleTorch_01", 0f, 0f, 0f),
+                new DecoItem("Props/SM_Prop_BottleTorch_01", 2.5f, 1.5f, 0f),
+                new DecoItem("Props/SM_Prop_Cage_01", -2f, 1f, 210f, 0.15f),
+                new DecoItem("Props/SM_Prop_Grave_03", -3.5f, 2.5f, 160f),
+            } },
+            // The remains of a trading stop on Riverrun.
+            new Vignette { island = "Riverrun", bearingDeg = -130f, inland = 7f,
+                lantern = true, lanternDx = -1.5f, lanternDz = 4f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Shop_01", -4f, 2f, 117f, 0.25f),
+                new DecoItem("Props/SM_Prop_Crane_01", 3f, 5f, -60f, 0.15f),
+                new DecoItem("Props/SM_Prop_Cart_01", 0f, 0f, -40f),
+                new DecoItem("Props/SM_Prop_Crate_05", 2.2f, 0.8f, 10f),
+                new DecoItem("Props/SM_Prop_Crate_02", 2.6f, -0.9f, 55f),
+                new DecoItem("Props/SM_Prop_Barrel_02", -2f, 1f, 0f),
+                new DecoItem("Props/SM_Prop_Barrel_Half_01", -2.4f, -0.8f, 0f),
+                new DecoItem("Props/SM_Prop_Rope_Fence_01", 1f, 3f, 0f),
+                new DecoItem("Props/SM_Prop_Rope_Fence_01", 3.5f, 3f, 0f),
+            } },
+            // The distance layer: silhouettes that read from open water and say
+            // "sail here". Verified spots — flat summits and shallows.
+            // Skull Rock crowns BareKnuckle's peak: THE pirate landmark.
+            new Vignette { island = "BareKnuckle", bearingDeg = 10f, inland = 21f, items = new[]
+            {
+                new DecoItem("Environments/SM_Env_Rock_Skull_01", 0f, 0f, 205f, 0.45f, 1.6f),
+            } },
+            // A natural sea arch stands off Grande's north-west shallows.
+            new Vignette { island = "Grande", bearingDeg = 320f, inland = -10f, items = new[]
+            {
+                new DecoItem("Environments/SM_Env_Rock_Arch_01", 0f, 0f, 40f, 1.2f, 1.3f),
+            } },
+            // A ruined mansion tower on Longreach's eastern summit — old money, old loot.
+            new Vignette { island = "Longreach", bearingDeg = 95f, inland = 105f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Mansion_Tower_01", 0f, 0f, -95f, 0.35f),
+                new DecoItem("Buildings/SM_Bld_Stone_Wall_01", 3f, 1.5f, 40f, 0.3f),
+                new DecoItem("Buildings/SM_Bld_Stone_Wall_End_01", -2.8f, 2f, 290f, 0.3f),
+                new DecoItem("Props/SM_Prop_TreasurePile_02", 1.2f, -2f, 0f, 0.1f),
+            } },
+
+            // BareKnuckle: a hillside graveyard and someone's unburied hoard.
+            new Vignette { island = "BareKnuckle", bearingDeg = 100f, inland = 9f, items = new[]
+            {
+                new DecoItem("Buildings/SM_Bld_Rickety_House_02", 5f, -4f, 280f, 0.3f),
+                new DecoItem("Props/SM_Prop_Grave_01", 0f, 0f, 100f),
+                new DecoItem("Props/SM_Prop_Grave_02", 1.8f, 0.6f, 80f),
+                new DecoItem("Props/SM_Prop_Grave_04", -1.7f, 0.5f, 115f),
+                new DecoItem("Props/SM_Prop_Grave_05", 3.4f, 1.4f, 95f),
+                new DecoItem("Props/SM_Prop_Grave_03", -3.2f, 1.2f, 120f),
+                new DecoItem("Environments/SM_Env_Tree_Dead_01", 0.8f, 3.2f, 0f),
+                new DecoItem("Props/SM_Prop_TreasurePile_01", -0.6f, -2.2f, 0f, 0.12f),
+            } },
+        };
+
+        private static void PlaceVignettes(IslandSpec spec, GameObject island)
+        {
+            foreach (Vignette v in Vignettes)
+            {
+                if (v.island != spec.name) continue;
+                float a = v.bearingDeg * Mathf.Deg2Rad;
+                float r = Mathf.Max(0f, spec.CoastRadius(a) - v.inland);
+                float ax = Mathf.Sin(a) * r, az = Mathf.Cos(a) * r;
+
+                var parent = new GameObject($"Vignette_{v.bearingDeg:0}");
+                parent.transform.SetParent(island.transform, false);
+                foreach (DecoItem item in v.items)
+                {
+                    var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                        $"{SyntyRoot}/{item.path}.prefab");
+                    if (prefab == null)
+                    {
+                        Debug.LogWarning($"[ShipTestAreaBuilder] Vignette prop missing: {item.path}");
+                        continue;
+                    }
+                    float x = ax + item.dx, z = az + item.dz;
+                    float h = SpecHeight(spec, spec.center.x + x, spec.center.y + z);
+                    var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                    go.transform.SetParent(parent.transform, false);
+                    go.transform.localPosition = new Vector3(x, h, z);
+                    go.transform.localRotation = Quaternion.Euler(0f, item.yaw, item.roll);
+                    go.transform.localScale = Vector3.one * item.scale;
+                    // sink = how deep the prop's lowest point embeds below the sand.
+                    SnapToGround(go, item.sink);
+                }
+                if (v.lantern)
+                    AddVignetteLantern(spec, parent, ax + v.lanternDx, az + v.lanternDz);
+            }
+        }
+
+        // A ground-standing lantern post whose lamp auto-lights at night (DockLantern in
+        // Auto mode) — the after-dark "come look over here" that carries across water.
+        private static void AddVignetteLantern(IslandSpec spec, GameObject parent, float x, float z)
+        {
+            float ground = SpecHeight(spec, spec.center.x + x, spec.center.y + z);
+            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+
+            var post = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            post.name = "LanternPost";
+            post.transform.SetParent(parent.transform, false);
+            post.transform.localPosition = new Vector3(x, ground + 0.85f, z);
+            post.transform.localScale = new Vector3(0.22f, 1.9f, 0.22f);
+            post.GetComponent<MeshRenderer>().sharedMaterial = wood;
+
+            Vector3 lampPos = new Vector3(x, ground + 1.85f, z);
+            var lanternPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(LanternPrefabPath);
+            if (lanternPrefab != null)
+            {
+                var lantern = (GameObject)PrefabUtility.InstantiatePrefab(lanternPrefab);
+                lantern.name = "Lantern";
+                lantern.transform.SetParent(parent.transform, false);
+                lantern.transform.localPosition = lampPos;
+            }
+
+            var lightGo = new GameObject("LanternLight");
+            lightGo.transform.SetParent(parent.transform, false);
+            lightGo.transform.localPosition = lampPos + new Vector3(0f, 0.25f, 0f);
+            var lamp = lightGo.AddComponent<Light>();
+            lamp.type = LightType.Point;
+            lamp.color = new Color(1f, 0.72f, 0.42f);
+            lamp.intensity = 3f;
+            lamp.range = 22f;
+            lamp.shadows = LightShadows.None;
+
+            var glow = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            glow.name = "LanternGlow";
+            Object.DestroyImmediate(glow.GetComponent<Collider>());
+            glow.transform.SetParent(parent.transform, false);
+            glow.transform.localPosition = lampPos + new Vector3(0f, 0.22f, 0f);
+            glow.transform.localScale = Vector3.one * 0.16f;
+            var glowRenderer = glow.GetComponent<MeshRenderer>();
+            glowRenderer.sharedMaterial = GetOrCreateEmissiveMaterial(
+                LanternGlowMatPath, new Color(1f, 0.72f, 0.42f));
+
+            var control = lightGo.AddComponent<DockLantern>();
+            control.SetRefs(lamp, glowRenderer);
         }
 
         // Maintenance: raise the destination archipelago once per layout version.
@@ -2599,6 +2828,7 @@ namespace Game.EditorTools
                 sandGo.AddComponent<MeshCollider>().sharedMesh = mesh;
 
                 PlaceSpecFlora(spec, island);
+                PlaceVignettes(spec, island);
             }
 
             // The start island joins the same look: its mound greens over above the beach.
@@ -2687,17 +2917,21 @@ namespace Game.EditorTools
         {
             string[] shore = { "SM_Env_PalmTree_01", "SM_Env_PalmTree_02", "SM_Env_PalmTree_03",
                 "SM_Env_PalmTree_Tall_01", "SM_Env_PalmTree_Tall_02", "SM_Env_PalmBush_03",
-                "SM_Env_Beach_Pile_01", "SM_Env_Mangrove_Tree_01" };
+                "SM_Env_Beach_Pile_01", "SM_Env_Beach_Piles_01", "SM_Env_Mangrove_Tree_01",
+                "SM_Env_Mangrove_Tree_02" };
             string[] green = { "SM_Env_Tree_Large_01", "SM_Env_Tree_Large_02", "SM_Env_Bush_01",
                 "SM_Env_Bush_02", "SM_Env_Fern_01", "SM_Env_GrassPatch_01", "SM_Env_GrassPatch_02",
-                "SM_Env_GrassPatch_03", "SM_Env_Plants_01", "SM_Env_Flowers_01" };
+                "SM_Env_GrassPatch_03", "SM_Env_Plants_01", "SM_Env_Plants_02", "SM_Env_Plants_03",
+                "SM_Env_Flowers_01", "SM_Env_Flowers_02", "SM_Env_GroundLeaves_01",
+                "SM_Env_SugarCane_01", "SM_Env_Tree_Vines_01", "SM_Env_Sunflower_01" };
             string[] crag = { "SM_Env_Rocks_01", "SM_Env_Rocks_02", "SM_Env_Rocks_03",
-                "SM_Env_Rock_01", "SM_Env_Tree_Dead_01", "SM_Env_GrassPatch_02" };
+                "SM_Env_Rock_01", "SM_Env_Rock_02", "SM_Env_Rock_03", "SM_Env_Tree_Dead_01",
+                "SM_Env_GrassPatch_02" };
 
             var parent = new GameObject("Flora");
             parent.transform.SetParent(island.transform, false);
 
-            int target = Mathf.Clamp(Mathf.RoundToInt(spec.radius * spec.radius / 330f), 40, 280);
+            int target = Mathf.Clamp(Mathf.RoundToInt(spec.radius * spec.radius / 260f), 50, 340);
             int placed = 0;
             for (int i = 0; i < target * 3 && placed < target; i++)
             {
@@ -2707,7 +2941,16 @@ namespace Game.EditorTools
                 float x = Mathf.Sin(a) * r, z = Mathf.Cos(a) * r;
                 float wx = spec.center.x + x, wz = spec.center.y + z;
                 float h = SpecHeight(spec, wx, wz);
-                if (h < 0.45f) continue; // sea, river, or wet sand
+                if (h < 0.12f) continue; // open water or river channel
+
+                // The wet fringe gets seaweed strands instead of land flora.
+                if (h < 0.45f)
+                {
+                    Place(parent, "SM_Env_Seaweed_01", x, h, z,
+                        Hash01(i * 5.99f, 1f) * 360f, 0.9f + Hash01(i * 8.31f, 2f) * 0.5f, 0.3f);
+                    placed++;
+                    continue;
+                }
 
                 // Facet slope from finite differences; steep ground rejects trees.
                 float g = Mathf.Max(
@@ -2717,18 +2960,54 @@ namespace Game.EditorTools
 
                 string[] band = g > 0.5f || h > 13f ? crag : h < 2.2f ? shore : green;
                 string pick = band[(int)(Hash01(i * 3.77f, 0.5f) * band.Length) % band.Length];
-                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
-                    $"{SyntyRoot}/Environments/{pick}.prefab");
-                if (prefab == null) continue;
-
-                var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
-                go.transform.SetParent(parent.transform, false);
-                go.transform.localPosition = new Vector3(x, h - 0.15f, z);
-                go.transform.localRotation = Quaternion.Euler(0f, Hash01(i * 5.99f, 1f) * 360f, 0f);
-                go.transform.localScale = Vector3.one * (0.85f + Hash01(i * 8.31f, 2f) * 0.45f);
+                if (Place(parent, pick, x, h, z,
+                        Hash01(i * 5.99f, 1f) * 360f, 0.85f + Hash01(i * 8.31f, 2f) * 0.45f) == null)
+                    continue;
                 placed++;
+
+                // Trees pull companions: clumps read as groves, not a uniform sprinkle.
+                if (!pick.Contains("Tree")) continue;
+                int clump = (int)(Hash01(i * 9.42f, 3f) * 3f); // 0..2 companions
+                for (int c = 0; c < clump; c++)
+                {
+                    float ca = Hash01(i * 11.3f + c, 4f) * Mathf.PI * 2f;
+                    float cr = 2.5f + Hash01(i * 13.7f + c, 5f) * 2.8f;
+                    float cx = x + Mathf.Sin(ca) * cr, cz = z + Mathf.Cos(ca) * cr;
+                    float ch = SpecHeight(spec, spec.center.x + cx, spec.center.y + cz);
+                    if (ch < 0.5f) continue;
+                    Place(parent, pick, cx, ch, cz,
+                        Hash01(i * 17.9f + c, 6f) * 360f, 0.75f + Hash01(i * 19.3f + c, 7f) * 0.4f);
+                    placed++;
+                }
             }
             Debug.Log($"[ShipTestAreaBuilder] {spec.name}: {placed} scatter props placed.");
+        }
+
+        private static GameObject Place(GameObject parent, string envName,
+            float x, float groundY, float z, float yaw, float scale, float embed = 0.12f)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                $"{SyntyRoot}/Environments/{envName}.prefab");
+            if (prefab == null) return null;
+            var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+            go.transform.SetParent(parent.transform, false);
+            go.transform.localPosition = new Vector3(x, groundY, z);
+            go.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+            go.transform.localScale = Vector3.one * scale;
+            SnapToGround(go, embed);
+            return go;
+        }
+
+        // Settle a placed prop so its lowest rendered point sits `embed` below the sampled
+        // ground height — immune to each prefab's pivot convention (corner, centre, base),
+        // which is what left some props floating and others buried.
+        private static void SnapToGround(GameObject go, float embed)
+        {
+            Renderer[] rs = go.GetComponentsInChildren<Renderer>();
+            if (rs.Length == 0) return;
+            Bounds b = rs[0].bounds;
+            for (int i = 1; i < rs.Length; i++) b.Encapsulate(rs[i].bounds);
+            go.transform.position += Vector3.up * (go.transform.position.y - embed - b.min.y);
         }
 
         private static void EnsureJettiesOnce()
