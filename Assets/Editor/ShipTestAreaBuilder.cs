@@ -181,6 +181,7 @@ namespace Game.EditorTools
                 EnsureDockPilesOnce();
                 EnsureArchipelagoOnce();
                 EnsureSharksOnce();
+                EnsureCargoOnce();
                 EnsureShipMoored();
                 EnsureDayNightOnce();
                 EnsureSkyOnce();
@@ -1162,8 +1163,8 @@ namespace Game.EditorTools
                     view.SetExtents(hullBox.size.z * 0.4f, Mathf.Max(2f, hullBox.size.x * 0.45f));
 
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: visual buoyancy added " +
-                          $"({floatTargets.Count} rocked subtrees). Colliders and physics untouched.");
+                Debug.Log($"[ShipTestAreaBuilder] {path}: wave-sampling footprint added " +
+                          "(ShipFloatView extents for the physical tilt). Colliders untouched.");
             }
             finally
             {
@@ -1171,50 +1172,9 @@ namespace Game.EditorTools
             }
         }
 
-        // Maintenance: retune the float view once for the forced-oscillator dynamics —
-        // soft limits need headroom above the old hard clamps, and the hull's natural
-        // frequency moves near the swell's so waves visibly work the ship. Only touches
-        // values still at the old defaults; anything hand-tuned is left alone.
-        private static void EnsureFloatDynamicsOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            GameObject harbor = GameObject.Find("Harbor");
-            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
-            if (current == null) return;
-
-            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
-                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
-            string path = PrefabPathFor(spec);
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            var assetView = asset != null ? asset.GetComponent<ShipFloatView>() : null;
-            if (assetView == null) return;
-
-            var soAsset = new SerializedObject(assetView);
-            bool AtOldDefault(string prop, float value) =>
-                Mathf.Abs(soAsset.FindProperty(prop).floatValue - value) < 0.001f;
-            if (!AtOldDefault("maxPitch", 1.0f) || !AtOldDefault("maxRoll", 1.5f)
-                || !AtOldDefault("maxHeave", 0.25f) || !AtOldDefault("stiffness", 1.5f)) return;
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                var view = contents.GetComponent<ShipFloatView>();
-                if (view == null) return;
-                var so = new SerializedObject(view);
-                so.FindProperty("maxPitch").floatValue = 1.75f;
-                so.FindProperty("maxRoll").floatValue = 2.5f;
-                so.FindProperty("maxHeave").floatValue = 0.35f;
-                so.FindProperty("stiffness").floatValue = 2.0f;
-                so.ApplyModifiedPropertiesWithoutUndo();
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: float view retuned for wave-forced " +
-                          "dynamics (soft limits 1.75°/2.5°/0.35 m, hull frequency 2.0 rad/s).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
+        // Retired: the float view no longer animates anything (ship motion is fully
+        // physical and its oscillator fields are gone), so there is nothing to retune.
+        private static void EnsureFloatDynamicsOnce() { }
 
         // Maintenance: the helmsman's visual stance (face the wheel, grip the rim) once.
         private static void EnsureHelmPoseOnce()
@@ -1236,46 +1196,13 @@ namespace Game.EditorTools
             }
         }
 
-        // Maintenance: the first-person camera gets its subtle deck sway once. The rig is
-        // hand-authored in the scene, so this patches the scene object, not a prefab.
-        private static void EnsureCameraSwayOnce()
-        {
-            if (SceneManager.GetActiveScene().path != ScenePath) return;
-            var rig = Object.FindAnyObjectByType<Game.Player.CameraRig>(FindObjectsInactive.Include);
-            if (rig == null) return;
+        // Retired: deck sway is physical — the camera pivot rides the really-tilting
+        // deck via parenting. CameraDeckSway is an inert stub; nothing to install.
+        private static void EnsureCameraSwayOnce() { }
 
-            var so = new SerializedObject(rig);
-            var firstPerson = so.FindProperty("firstPerson").objectReferenceValue
-                as Unity.Cinemachine.CinemachineCamera;
-            if (firstPerson == null
-                || firstPerson.GetComponent<Game.Player.CameraDeckSway>() != null) return;
-
-            firstPerson.gameObject.AddComponent<Game.Player.CameraDeckSway>();
-            Scene scene = firstPerson.gameObject.scene;
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] First-person camera: subtle deck sway added (CameraDeckSway).");
-        }
-
-        // Maintenance: the player's visual model rides the ship's visual rock once.
-        private static void EnsurePlayerRockOnce()
-        {
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
-            if (asset == null || asset.GetComponent<PlayerRockView>() != null) return;
-
-            GameObject player = PrefabUtility.LoadPrefabContents(PlayerPrefabPath);
-            try
-            {
-                player.AddComponent<PlayerRockView>();
-                PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
-                Debug.Log("[ShipTestAreaBuilder] Player.prefab: model now rocks with the ship deck " +
-                          "(PlayerRockView added).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(player);
-            }
-        }
+        // Retired: the avatar rides the really-tilting deck via parenting; PlayerRockView
+        // is an inert stub and no longer gets installed.
+        private static void EnsurePlayerRockOnce() { }
 
         // Maintenance: give the moored ship's prefab its visual buoyancy once.
         private static void EnsureShipFloatOnce()
@@ -1305,6 +1232,242 @@ namespace Game.EditorTools
             PatchPrefabAnchorStation(spec);
             PatchPrefabAnchorChain(spec);
             PatchPrefabHullAnchor(spec);
+            PatchPrefabCargoHold(spec);
+            PatchPrefabMotionTuning(spec);
+        }
+
+        // One-shot retune for the physical-only motion era, keyed on the old baked
+        // heaveResponse so later hand-tuning is never fought. The hull rigidbody carries
+        // ALL the sea motion now (the visual sway layer is retired), so the physical
+        // heave chase tightens — there is no residual layer left to paper over a lazy one.
+        private static void PatchPrefabMotionTuning(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null) return;
+            var ctrl = asset.GetComponent<ShipController>();
+            if (ctrl == null) return;
+            var probe = new SerializedObject(ctrl).FindProperty("heaveResponse");
+            if (probe == null || !Mathf.Approximately(probe.floatValue, 2.5f)) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var c = new SerializedObject(contents.GetComponent<ShipController>());
+                c.FindProperty("heaveResponse").floatValue = 4.5f;
+                c.ApplyModifiedPropertiesWithoutUndo();
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: heave chase tightened for " +
+                          "physical-only ship motion.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // Stowage on the main deck: a trigger volume just aft of the gangway where cargo
+        // lashes down (CargoItem parents to the ship) once set down at rest, plus a
+        // painted deck patch so the crew can see where to stack. CargoHold must live on
+        // the ship ROOT (Mirror syncs only behaviours on the identity object). In-place
+        // patch; hand-adjusted colliders untouched.
+        private static void PatchPrefabCargoHold(ShipSpec spec)
+        {
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null) return;
+            if (asset.GetComponentInChildren<CargoHold>(true) != null)
+            {
+                FixupCargoHoldVisuals(path); // already patched: make sure the zone reads
+                FixupCargoHoldCoaming(path);
+                return;
+            }
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var decks = contents.GetComponentsInChildren<BoxCollider>(true)
+                    .Where(b => b.name == "Deck" && !b.isTrigger).ToList();
+                if (decks.Count == 0) return;
+                float minY = decks.Min(d => d.center.y);
+                var main = decks.Where(d => d.center.y < minY + 0.25f).ToList();
+                float top = main[0].center.y + main[0].size.y * 0.5f;
+                float aftZ = main.Min(d => d.center.z);
+                float width = Mathf.Min(4.2f, main.Max(d => d.size.x) - 1f);
+                Vector3 c = new Vector3(0f, top + 0.75f, aftZ + 1.2f);
+
+                var holdGo = new GameObject("CargoHoldVolume");
+                holdGo.transform.SetParent(contents.transform, false);
+                var box = holdGo.AddComponent<BoxCollider>();
+                box.isTrigger = true;
+                box.center = c;
+                box.size = new Vector3(width, 1.5f, 3.4f);
+
+                BuildCargoHoldVisuals(contents.transform, top, c.z, width);
+
+                var hold = contents.AddComponent<CargoHold>();
+                hold.SetVolume(box);
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo hold added on the main deck " +
+                          $"(z {c.z:F1}, {width:F1}m wide). Colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+            FixupCargoHoldCoaming(path);
+        }
+
+        // The hold's coaming: a low lip of REAL colliders around the stow zone. Cargo
+        // rides the deck loose and genuinely slides in a heel now, so the coaming is
+        // what keeps a stacked pile aboard through mild seas — and what a hard roll
+        // spills it over. Kinematic child body, matching the deck-strip pattern, so
+        // cargo and player contacts can never shove the hull through it.
+        private static void FixupCargoHoldCoaming(string path)
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null || FindDeep(asset.transform, "CargoHoldCoaming") != null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                Transform volumeT = FindDeep(contents.transform, "CargoHoldVolume");
+                var volume = volumeT != null ? volumeT.GetComponent<BoxCollider>() : null;
+                if (volume == null) return;
+
+                Vector3 c = volume.center;
+                float width = volume.size.x, depth = volume.size.z;
+                float top = c.y - volume.size.y * 0.5f;
+                const float h = 0.2f, t = 0.14f; // low enough that players step over it
+
+                Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+                var coaming = new GameObject("CargoHoldCoaming");
+                coaming.transform.SetParent(contents.transform, false);
+                var body = coaming.AddComponent<Rigidbody>();
+                body.isKinematic = true;
+                body.useGravity = false;
+
+                (Vector3 pos, Vector3 size)[] walls =
+                {
+                    (new Vector3(0f, top + h * 0.5f, c.z + depth * 0.5f + t * 0.5f), new Vector3(width + 2f * t, h, t)),
+                    (new Vector3(0f, top + h * 0.5f, c.z - depth * 0.5f - t * 0.5f), new Vector3(width + 2f * t, h, t)),
+                    (new Vector3(width * 0.5f + t * 0.5f, top + h * 0.5f, c.z), new Vector3(t, h, depth)),
+                    (new Vector3(-width * 0.5f - t * 0.5f, top + h * 0.5f, c.z), new Vector3(t, h, depth)),
+                };
+                foreach ((Vector3 pos, Vector3 size) w in walls)
+                {
+                    var col = coaming.AddComponent<BoxCollider>();
+                    col.center = w.pos;
+                    col.size = w.size;
+
+                    var viz = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                    viz.name = "Plank";
+                    viz.transform.SetParent(coaming.transform, false);
+                    viz.transform.localPosition = w.pos;
+                    viz.transform.localScale = w.size;
+                    Object.DestroyImmediate(viz.GetComponent<Collider>());
+                    viz.GetComponent<MeshRenderer>().sharedMaterial = wood;
+                }
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo hold coaming added " +
+                          "(low lip retains sliding cargo; hard rolls spill it).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // The stow zone must READ from across the deck: gold border frame + big flat
+        // CARGO lettering on the planks, the same gold language as the delivery pad.
+        private static void BuildCargoHoldVisuals(Transform root, float top, float zCenter, float width)
+        {
+            // Emissive gold: the frame only appears while a player carries cargo nearby
+            // (CargoHold toggles it), so it can afford to glow like guidance UI.
+            Material gold = GetOrCreateEmissiveMaterial(
+                "Assets/Art/Materials/Sea_CargoGlow.mat", new Color(0.95f, 0.75f, 0.25f));
+            Material dark = GetOrCreateMaterial(
+                "Assets/Art/Materials/Sea_CargoMark.mat", new Color(0.24f, 0.16f, 0.1f), 0.05f);
+
+            var visuals = new GameObject("CargoHoldFrame_v2");
+            visuals.transform.SetParent(root, false);
+
+            var fill = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            fill.name = "Fill";
+            fill.transform.SetParent(visuals.transform, false);
+            fill.transform.localPosition = new Vector3(0f, top + 0.015f, zCenter);
+            fill.transform.localScale = new Vector3(width, 0.03f, 3.4f);
+            Object.DestroyImmediate(fill.GetComponent<Collider>());
+            fill.GetComponent<MeshRenderer>().sharedMaterial = dark;
+
+            const float depth = 3.4f, strip = 0.16f, stripH = 0.05f;
+            foreach ((Vector3 pos, Vector3 scale) in new[]
+            {
+                (new Vector3(0f, top + 0.025f, zCenter + depth * 0.5f), new Vector3(width, stripH, strip)),
+                (new Vector3(0f, top + 0.025f, zCenter - depth * 0.5f), new Vector3(width, stripH, strip)),
+                (new Vector3(width * 0.5f, top + 0.025f, zCenter), new Vector3(strip, stripH, depth)),
+                (new Vector3(-width * 0.5f, top + 0.025f, zCenter), new Vector3(strip, stripH, depth)),
+            })
+            {
+                var edge = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                edge.name = "Edge";
+                edge.transform.SetParent(visuals.transform, false);
+                edge.transform.localPosition = pos;
+                edge.transform.localScale = scale;
+                Object.DestroyImmediate(edge.GetComponent<Collider>());
+                edge.GetComponent<MeshRenderer>().sharedMaterial = gold;
+            }
+
+            var textGo = new GameObject("CargoText");
+            textGo.transform.SetParent(visuals.transform, false);
+            textGo.transform.localPosition = new Vector3(0f, top + 0.045f, zCenter);
+            // Flat on the planks, top toward the stern: read right walking aft from the gangway.
+            textGo.transform.localRotation = Quaternion.Euler(90f, 180f, 0f);
+            var text = textGo.AddComponent<TextMesh>();
+            text.text = "CARGO";
+            text.anchor = TextAnchor.MiddleCenter;
+            text.alignment = TextAlignment.Center;
+            text.fontSize = 64;
+            text.characterSize = 0.28f;
+            text.color = new Color(0.85f, 0.7f, 0.3f);
+            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            text.font = font;
+            textGo.GetComponent<MeshRenderer>().sharedMaterial = font.material;
+        }
+
+        // Migration for prefabs holding earlier hold visuals (dark patch, always-on frame).
+        private static void FixupCargoHoldVisuals(string path)
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (FindDeep(asset.transform, "CargoHoldFrame_v2") != null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var hold = contents.GetComponentInChildren<CargoHold>(true);
+                Transform volumeT = FindDeep(contents.transform, "CargoHoldVolume");
+                var volume = volumeT != null ? volumeT.GetComponent<BoxCollider>() : null;
+                if (hold == null || volume == null) return;
+
+                foreach (string old in new[] { "CargoHoldMark", "CargoHoldFrame" })
+                {
+                    Transform t = FindDeep(contents.transform, old);
+                    if (t != null) Object.DestroyImmediate(t.gameObject);
+                }
+
+                float top = volume.center.y - volume.size.y * 0.5f;
+                BuildCargoHoldVisuals(contents.transform, top, volume.center.z, volume.size.x);
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo hold zone reframed " +
+                          "(gold border + CARGO lettering).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
         }
 
         // The ship's own baked bow anchor becomes THE anchor: swap the hull mesh for the
@@ -2492,6 +2655,9 @@ namespace Game.EditorTools
             public float phaseA, phaseB;        // noise phases: each island's own character
             public PeakSpec[] peaks = { };      // mountains rising off the interior
             public RiverSpec[] rivers = { };
+            // Port: a modular Synty pier at this coast bearing, with a mooring berth.
+            public bool hasDock;
+            public float dockBearingDeg;
 
             // Submerged sand ring outside the coast; grows with the island.
             public float Skirt => Mathf.Max(14f, radius * 0.08f);
@@ -2529,6 +2695,7 @@ namespace Game.EditorTools
 
             // The big three, out on open water — real relief: ridgelines and summits.
             new IslandSpec { name = "Grande", center = new Vector2(640f, -420f), radius = 260f,
+                hasDock = true, dockBearingDeg = 166f, // serves the smugglers' village
                 plateau = 11f, hillNoise = 4f, phaseA = 0.7f, phaseB = 3.1f,
                 peaks = new[] { new PeakSpec(95f, 0.32f, 38f, 62f),
                                 new PeakSpec(205f, 0.45f, 30f, 72f),
@@ -2536,11 +2703,13 @@ namespace Game.EditorTools
                 rivers = new[] { new RiverSpec(-60f, 140f, 12f, 35f),
                                  new RiverSpec(30f, -155f, 10f, -30f) } },
             new IslandSpec { name = "Westwatch", center = new Vector2(-600f, -350f), radius = 200f,
+                hasDock = true, dockBearingDeg = -95f, // under the summit battery
                 plateau = 9f, hillNoise = 3.5f, phaseA = 4.4f, phaseB = 1.8f,
                 peaks = new[] { new PeakSpec(-95f, 0.4f, 27f, 58f),
                                 new PeakSpec(120f, 0.42f, 20f, 48f) },
                 rivers = new[] { new RiverSpec(40f, -150f, 13f, 55f) } },
             new IslandSpec { name = "Longreach", center = new Vector2(80f, -700f), radius = 160f,
+                hasDock = true, dockBearingDeg = -60f, // the castaway's beach
                 plateau = 8f, hillNoise = 3f, phaseA = 2.0f, phaseB = 5.1f,
                 peaks = new[] { new PeakSpec(95f, 0.35f, 23f, 50f),
                                 new PeakSpec(262f, 0.4f, 18f, 44f) },
@@ -2676,7 +2845,7 @@ namespace Game.EditorTools
 
         // Bump to rebuild every scene's archipelago on the next maintenance pass (layout
         // redesigns, generator changes). Island mesh assets are wiped and regenerated.
-        private const int ArchipelagoVersion = 6;
+        private const int ArchipelagoVersion = 9; // v7: loot; v8: island ports; v9: real shipwreck prop
 
         private const string IslandMatPath = "Assets/Art/Materials/Island_Terrain.mat";
 
@@ -2713,6 +2882,23 @@ namespace Game.EditorTools
             }
         }
 
+        // A piece of collectable cargo at a vignette: which Synty prop, where relative
+        // to the anchor, and what it pays on delivery. Placed as a fully networked
+        // Grabbable+CargoItem, unlike the static DecoItems around it.
+        private struct LootSpec
+        {
+            public string path;
+            public float dx, dz, yaw;
+            public int value;
+            public float mass;
+
+            public LootSpec(string path, float dx, float dz, float yaw, int value, float mass = 6f)
+            {
+                this.path = path; this.dx = dx; this.dz = dz;
+                this.yaw = yaw; this.value = value; this.mass = mass;
+            }
+        }
+
         private class Vignette
         {
             public string island;
@@ -2722,6 +2908,8 @@ namespace Game.EditorTools
             // scene reads as a point of interest from open water.
             public bool lantern;
             public float lanternDx, lanternDz;
+            // Collectable cargo: the promise the lantern makes, kept.
+            public LootSpec[] loot;
         }
 
         // One story per island, anchored off the analytic coast (verified against the
@@ -2729,14 +2917,19 @@ namespace Game.EditorTools
         // landfall memorable — the scatter is texture, these are destinations.
         private static readonly Vignette[] Vignettes =
         {
-            // A trader that didn't make it: bare hull half-sunk on Grande's north shore.
+            // A trader that didn't make it: a real wreck carcass on Grande's north shore
+            // (the authored Synty shipwreck prop — broken hull, no improvised roll).
             new Vignette { island = "Grande", bearingDeg = 355f, inland = -1f, items = new[]
             {
-                new DecoItem("Vehicles/SM_Veh_Boat_Medium_01_Hull", 0f, 0f, 150f, 1.1f, 1f, 12f),
+                new DecoItem("Props/SM_Prop_Shipwreck_03", 0f, 0f, 150f, 1.2f),
                 new DecoItem("Props/SM_Prop_Debris_01", 6f, 3f, 40f),
                 new DecoItem("Props/SM_Prop_Debris_02", -5f, 2f, 210f),
                 new DecoItem("Props/SM_Prop_Barrel_02", 4.5f, -2f, 0f, 0.12f),
                 new DecoItem("Props/SM_Prop_Crate_02", -4f, -1.5f, 25f, 0.12f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Chest_02", 2f, 1.2f, 30f, 50, 8f),
+                new LootSpec("Props/SM_Prop_Sack_01", -2.2f, 2.6f, 0f, 15, 3f),
             } },
             // Smugglers' village on the flat southern shelf: two shanties and a tent
             // around the old camp. Complete preset buildings — no assembly.
@@ -2756,6 +2949,10 @@ namespace Game.EditorTools
                 new DecoItem("Props/SM_Prop_Chest_01", 0.5f, 2.4f, 205f),
                 new DecoItem("Props/SM_Prop_BottleTorch_01", 3.2f, -2.2f, 0f),
                 new DecoItem("Props/SM_Prop_BottleTorch_01", -3.2f, -2.4f, 0f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Chest_03", 1.6f, 2.8f, 160f, 60, 8f),
+                new LootSpec("Props/SM_Prop_Sack_02", -1.2f, 2f, 0f, 15, 3f),
             } },
             // Westwatch earns its name: a gun battery on the summit plateau, aimed to sea.
             new Vignette { island = "Westwatch", bearingDeg = -95f, inland = 115f,
@@ -2768,6 +2965,10 @@ namespace Game.EditorTools
                 new DecoItem("Props/SM_Prop_Barrel_05", -2.6f, 0.6f, 0f),
                 new DecoItem("Props/SM_Prop_Campfire_01", 1.5f, 2.3f, 0f),
                 new DecoItem("Props/SM_Prop_BottleTorch_01", 3f, 1f, 0f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Crate_Cannonballs_01", 2.4f, -2.2f, 15f, 40, 10f),
+                new LootSpec("Props/SM_Prop_Barrel_04", -3.2f, 1.6f, 0f, 20, 7f),
             } },
             // A castaway's beached rowboat on Longreach.
             new Vignette { island = "Longreach", bearingDeg = -60f, inland = 5f, items = new[]
@@ -2778,6 +2979,10 @@ namespace Game.EditorTools
                 new DecoItem("Props/SM_Prop_Barrel_Half_01", 2.6f, -1.6f, 0f),
                 new DecoItem("Props/SM_Prop_Crate_03", -2.8f, 1f, 45f),
                 new DecoItem("Props/SM_Prop_Campfire_01", -1f, 3f, 0f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Sack_03", 1.8f, -2f, 0f, 15, 3f),
+                new LootSpec("Props/SM_Prop_Crate_05", -1.6f, -2.4f, 40f, 25, 6f),
             } },
             // Something unwelcoming flanks Serpent's river mouth.
             new Vignette { island = "Serpent", bearingDeg = 30f, inland = 4f, items = new[]
@@ -2787,6 +2992,10 @@ namespace Game.EditorTools
                 new DecoItem("Props/SM_Prop_BottleTorch_01", 2.5f, 1.5f, 0f),
                 new DecoItem("Props/SM_Prop_Cage_01", -2f, 1f, 210f, 0.15f),
                 new DecoItem("Props/SM_Prop_Grave_03", -3.5f, 2.5f, 160f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Sack_04", 1.4f, -1.6f, 0f, 15, 3f),
+                new LootSpec("Props/SM_Prop_Barrel_03", 3f, -1f, 0f, 20, 7f),
             } },
             // The remains of a trading stop on Riverrun.
             new Vignette { island = "Riverrun", bearingDeg = -130f, inland = 7f,
@@ -2801,6 +3010,10 @@ namespace Game.EditorTools
                 new DecoItem("Props/SM_Prop_Barrel_Half_01", -2.4f, -0.8f, 0f),
                 new DecoItem("Props/SM_Prop_Rope_Fence_01", 1f, 3f, 0f),
                 new DecoItem("Props/SM_Prop_Rope_Fence_01", 3.5f, 3f, 0f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Crate_01", 1.6f, -1.8f, 10f, 25, 6f),
+                new LootSpec("Props/SM_Prop_Barrel_01", -1.8f, -1.4f, 0f, 20, 7f),
             } },
             // The distance layer: silhouettes that read from open water and say
             // "sail here". Verified spots — flat summits and shallows.
@@ -2821,6 +3034,11 @@ namespace Game.EditorTools
                 new DecoItem("Buildings/SM_Bld_Stone_Wall_01", 3f, 1.5f, 40f, 0.3f),
                 new DecoItem("Buildings/SM_Bld_Stone_Wall_End_01", -2.8f, 2f, 290f, 0.3f),
                 new DecoItem("Props/SM_Prop_TreasurePile_02", 1.2f, -2f, 0f, 0.1f),
+            }, loot = new[]
+            {
+                // The far island pays for the voyage: the jackpot chest.
+                new LootSpec("Props/SM_Prop_Skeleton_Chest_02", -1.6f, -1.8f, 210f, 100, 9f),
+                new LootSpec("Items/SM_Item_Chalice_01", 1.8f, -2.6f, 0f, 30, 1f),
             } },
 
             // BareKnuckle: a hillside graveyard and someone's unburied hoard.
@@ -2834,8 +3052,71 @@ namespace Game.EditorTools
                 new DecoItem("Props/SM_Prop_Grave_03", -3.2f, 1.2f, 120f),
                 new DecoItem("Environments/SM_Env_Tree_Dead_01", 0.8f, 3.2f, 0f),
                 new DecoItem("Props/SM_Prop_TreasurePile_01", -0.6f, -2.2f, 0f, 0.12f),
+            }, loot = new[]
+            {
+                new LootSpec("Props/SM_Prop_Skeleton_Chest_01", 1.2f, -2.6f, 130f, 80, 9f),
             } },
         };
+
+        // A port pier built from the Synty dock kit (SM_Bld_Dock_01/02: walk surface
+        // +5.4 above the piece pivot, piles to -1.74 — measured from the meshes), run
+        // seaward from where the beach reaches boarding height. The walk deck lands at
+        // DockTopY above sea level so every hull boards flush, exactly like home. The
+        // pier root carries the same mooring stack as the harbor jetties: NetworkIdentity
+        // + DockMooring + berth trigger off the pier tip, bollard + auto lantern on deck.
+        private const float DockPieceWalkY = 5.4f;
+        private const float DockPieceLength = 3.6f;
+
+        private static void BuildIslandDock(IslandSpec spec, GameObject island)
+        {
+            float th = spec.dockBearingDeg * Mathf.Deg2Rad;
+            var dir = new Vector2(Mathf.Sin(th), Mathf.Cos(th));
+
+            // Start the planks where the sand is at boarding height, so beach meets deck.
+            float coastR = spec.CoastRadius(th);
+            float rStart = coastR - 2f;
+            for (float r = coastR; r > coastR - 15f; r -= 0.5f)
+            {
+                float h = SpecHeight(spec, spec.center.x + dir.x * r, spec.center.y + dir.y * r);
+                if (h >= DockTopY - 0.15f) { rStart = r; break; }
+            }
+
+            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
+            var root = new GameObject($"Dock_{spec.name}");
+            root.transform.SetParent(island.transform, false);
+            root.transform.localPosition = new Vector3(dir.x * rStart, 0f, dir.y * rStart);
+            root.transform.localRotation = Quaternion.Euler(0f, spec.dockBearingDeg, 0f);
+            root.AddComponent<NetworkIdentity>();
+            var mooring = root.AddComponent<DockMooring>();
+
+            // Berth: alongside and beyond the pier tip, both flanks.
+            var berth = root.AddComponent<BoxCollider>();
+            berth.isTrigger = true;
+            berth.center = new Vector3(0f, 1f, 16f);
+            berth.size = new Vector3(24f, 8f, 22f);
+
+            string[] kit = { "SM_Bld_Dock_01", "SM_Bld_Dock_02", "SM_Bld_Dock_01", "SM_Bld_Dock_02" };
+            for (int i = 0; i < kit.Length; i++)
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                    $"{SyntyRoot}/Buildings/{kit[i]}.prefab");
+                if (prefab == null)
+                {
+                    Debug.LogWarning($"[ShipTestAreaBuilder] Dock piece missing: {kit[i]}");
+                    continue;
+                }
+                var piece = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                piece.transform.SetParent(root.transform, false);
+                piece.transform.localPosition =
+                    new Vector3(0f, DockTopY - DockPieceWalkY, 1.8f + i * DockPieceLength);
+                // Alternate facing so the modular repeat doesn't read as a pattern.
+                piece.transform.localRotation = Quaternion.Euler(0f, (i % 2) * 180f, 0f);
+            }
+
+            float tipZ = 1.8f + (kit.Length - 1) * DockPieceLength;
+            AddBollard(root, wood, mooring, new Vector3(1.1f, DockTopY + 0.3f, tipZ + 0.9f));
+            AddLantern(root, wood, new Vector3(-1.3f, 0f, tipZ + 0.9f), 0f, onDeck: true);
+        }
 
         private static void PlaceVignettes(IslandSpec spec, GameObject island)
         {
@@ -2869,7 +3150,90 @@ namespace Game.EditorTools
                 }
                 if (v.lantern)
                     AddVignetteLantern(spec, parent, ax + v.lanternDx, az + v.lanternDz);
+
+                if (v.loot != null)
+                {
+                    foreach (LootSpec l in v.loot)
+                    {
+                        GameObject go = MakeLoot(l.path, l.value, l.mass, parent.transform);
+                        if (go == null) continue;
+                        float x = ax + l.dx, z = az + l.dz;
+                        float h = SpecHeight(spec, spec.center.x + x, spec.center.y + z);
+                        go.transform.localPosition = new Vector3(x, h + 0.2f, z);
+                        go.transform.localRotation = Quaternion.Euler(0f, l.yaw, 0f);
+                        SnapToGround(go, -0.05f); // rest a hair above; physics settles it
+                    }
+                }
             }
+        }
+
+        // A Synty prop turned into collectable cargo: plain clone (so colliders can be
+        // adjusted), networked rigidbody, Grabbable carry, CargoItem value. Same stack
+        // as the GrabProp cube, minted in the editor so every piece is a baked scene
+        // NetworkIdentity — no runtime spawning, no prefab registration.
+        private static GameObject MakeLoot(string prefabPath, int value, float mass, Transform parent)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>($"{SyntyRoot}/{prefabPath}.prefab");
+            if (prefab == null)
+            {
+                Debug.LogWarning($"[ShipTestAreaBuilder] Loot prop missing: {prefabPath}");
+                return null;
+            }
+            GameObject go = Object.Instantiate(prefab, parent);
+            go.name = $"Loot_{prefab.name}";
+            // PlayerBody layer, recursively (nested colliders too): collides with decks
+            // and the world, but the ship's dynamic hull box ignores it — cargo can
+            // never shove the ship, same as players.
+            foreach (Transform t in go.GetComponentsInChildren<Transform>(true))
+                t.gameObject.layer = 8;
+
+            // Grabbable reads the ROOT collider; fit one from the renderers if the
+            // Synty prefab nests its collider (child colliders stay as extra volume).
+            if (go.GetComponent<Collider>() == null)
+            {
+                var box = go.AddComponent<BoxCollider>();
+                bool has = false;
+                Bounds local = default;
+                foreach (Renderer r in go.GetComponentsInChildren<Renderer>())
+                {
+                    Bounds w = r.bounds;
+                    for (int i = 0; i < 8; i++)
+                    {
+                        Vector3 corner = new Vector3(
+                            (i & 1) == 0 ? w.min.x : w.max.x,
+                            (i & 2) == 0 ? w.min.y : w.max.y,
+                            (i & 4) == 0 ? w.min.z : w.max.z);
+                        Vector3 p = go.transform.InverseTransformPoint(corner);
+                        if (!has) { local = new Bounds(p, Vector3.zero); has = true; }
+                        else local.Encapsulate(p);
+                    }
+                }
+                if (has) { box.center = local.center; box.size = local.size; }
+            }
+
+            var body = go.AddComponent<Rigidbody>();
+            body.mass = mass;
+            body.interpolation = RigidbodyInterpolation.Interpolate;
+            body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+            go.AddComponent<Mirror.NetworkIdentity>();
+            var sync = go.AddComponent<Mirror.NetworkRigidbodyReliable>();
+            sync.syncInterval = 0.05f;
+            // Mirror's NetworkTransform family defaults to ClientToServer (player-object
+            // tuning). On a server-owned prop that mode force-kinematics the body every
+            // FixedUpdate — cargo freezes mid-air. Server authority, like GrabProp.
+            sync.syncDirection = Mirror.SyncDirection.ServerToClient;
+
+            var grab = go.AddComponent<Grabbable>();
+            var soGrab = new SerializedObject(grab);
+            soGrab.FindProperty("holdAnchorOffset").vector3Value = new Vector3(0f, -0.15f, 0.6f);
+            soGrab.ApplyModifiedPropertiesWithoutUndo();
+
+            var cargo = go.AddComponent<CargoItem>();
+            var soCargo = new SerializedObject(cargo);
+            soCargo.FindProperty("value").intValue = value;
+            soCargo.ApplyModifiedPropertiesWithoutUndo();
+            return go;
         }
 
         // A ground-standing lantern post whose lamp auto-lights at night (DockLantern in
@@ -2963,6 +3327,87 @@ namespace Game.EditorTools
 
         private const string SharkPrefabPath = SyntyRoot + "/Characters/SM_Shark_01.prefab";
         private const int SharksVersion = 3; // bump when circuits/counts change
+
+        // Dock-side cargo infrastructure: the delivery ledger, the payout pad on the
+        // dock's shore end, and a few starter crates so the stow/deliver loop is
+        // testable without a voyage. One-shot; scene-baked NetworkIdentities.
+        private static void EnsureCargoOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            if (harbor.transform.Find("CargoManager") != null)
+            {
+                FixupLootSyncDirection();
+                return;
+            }
+
+            var mgr = new GameObject("CargoManager");
+            mgr.transform.SetParent(harbor.transform, false);
+            mgr.AddComponent<Mirror.NetworkIdentity>();
+            mgr.AddComponent<CargoManager>();
+
+            Material padMat = GetOrCreateMaterial(
+                "Assets/Art/Materials/Sea_CargoPad.mat", new Color(0.72f, 0.58f, 0.22f), 0.3f);
+            var pad = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            pad.name = "CargoDeliveryPad";
+            pad.transform.SetParent(harbor.transform, false);
+            pad.transform.position = new Vector3(2.2f, DockTopY + 0.03f, DockCenterZ + 5.5f);
+            pad.transform.localScale = new Vector3(3.2f, 0.06f, 3.2f);
+            Object.DestroyImmediate(pad.GetComponent<Collider>());
+            pad.GetComponent<MeshRenderer>().sharedMaterial = padMat;
+
+            var zone = new GameObject("CargoDeliveryZone");
+            zone.transform.SetParent(harbor.transform, false);
+            zone.transform.position = pad.transform.position + Vector3.up * 0.75f;
+            var zb = zone.AddComponent<BoxCollider>();
+            zb.isTrigger = true;
+            zb.size = new Vector3(3.2f, 1.5f, 3.2f);
+            zone.AddComponent<CargoDelivery>();
+
+            var starter = new GameObject("StarterLoot");
+            starter.transform.SetParent(harbor.transform, false);
+            PlaceStarterLoot("Props/SM_Prop_Crate_01", 10, 6f, starter.transform, new Vector3(-2.6f, DockTopY + 0.6f, DockCenterZ + 6.2f));
+            PlaceStarterLoot("Props/SM_Prop_Barrel_01", 15, 7f, starter.transform, new Vector3(-3.2f, DockTopY + 0.6f, DockCenterZ + 4.6f));
+            PlaceStarterLoot("Props/SM_Prop_Sack_01", 5, 3f, starter.transform, new Vector3(-1.8f, DockTopY + 0.6f, DockCenterZ + 4.9f));
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Cargo infrastructure placed: ledger, delivery pad, starter loot.");
+        }
+
+        private static void PlaceStarterLoot(string path, int value, float mass, Transform parent, Vector3 worldPos)
+        {
+            GameObject go = MakeLoot(path, value, mass, parent);
+            if (go != null) go.transform.position = worldPos;
+        }
+
+        // Migration: loot minted before the syncDirection fix carries Mirror's
+        // ClientToServer default, whose FixedUpdate force-kinematics server-owned
+        // bodies — frozen, floating cargo. Flip every scene CargoItem to server auth.
+        private static void FixupLootSyncDirection()
+        {
+            int fixedCount = 0;
+            foreach (var item in Object.FindObjectsByType<CargoItem>(
+                         FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                var sync = item.GetComponent<Mirror.NetworkRigidbodyReliable>();
+                if (sync == null || sync.syncDirection == Mirror.SyncDirection.ServerToClient)
+                    continue;
+                sync.syncDirection = Mirror.SyncDirection.ServerToClient;
+                EditorUtility.SetDirty(sync);
+                fixedCount++;
+            }
+            if (fixedCount > 0)
+            {
+                Scene scene = SceneManager.GetActiveScene();
+                EditorSceneManager.MarkSceneDirty(scene);
+                EditorSceneManager.SaveScene(scene);
+                Debug.Log($"[ShipTestAreaBuilder] {fixedCount} cargo items flipped to server " +
+                          "authority (ClientToServer default was freezing their physics).");
+            }
+        }
 
         private static void EnsureSharksOnce()
         {
@@ -3082,6 +3527,7 @@ namespace Game.EditorTools
 
                 PlaceSpecFlora(spec, island);
                 PlaceVignettes(spec, island);
+                if (spec.hasDock) BuildIslandDock(spec, island);
             }
 
             // The start island joins the same look: its mound greens over above the beach.
@@ -3258,8 +3704,33 @@ namespace Game.EditorTools
             if (SceneManager.GetActiveScene().path != ScenePath) return;
             GameObject harbor = GameObject.Find("Harbor");
             if (harbor == null) return;
-            if (harbor.transform.Find("Jetties") != null) return;
-            BuildJetties(harbor);
+            Transform jetties = harbor.transform.Find("Jetties");
+            if (jetties == null)
+            {
+                BuildJetties(harbor);
+                return;
+            }
+
+            // Migration: the free-standing practice jetties are retired — the island
+            // ports are the destinations now. Home mooring stays.
+            bool removed = false;
+            foreach (string name in new[] { "JettyEast", "JettyIsland" })
+            {
+                Transform old = jetties.Find(name);
+                if (old != null)
+                {
+                    Object.DestroyImmediate(old.gameObject);
+                    removed = true;
+                }
+            }
+            if (removed)
+            {
+                Scene scene = SceneManager.GetActiveScene();
+                EditorSceneManager.MarkSceneDirty(scene);
+                EditorSceneManager.SaveScene(scene);
+                Debug.Log("[ShipTestAreaBuilder] Open-water jetties retired: moorings now " +
+                          "live at the island ports (and home).");
+            }
         }
 
         [MenuItem("Tools/Ship/Rebuild Harbor Jetties")]
@@ -3296,13 +3767,8 @@ namespace Game.EditorTools
             var jetties = new GameObject("Jetties");
             jetties.transform.SetParent(harbor.transform, false);
 
-            // Two destinations: one out east past the rock slalom, one by the island at the
-            // far end (tucked to the island's shadow side, so its lantern self-lights).
-            BuildJetty(jetties, wood, waterY, "JettyEast",
-                new Vector3(48f, 0f, -85f), yawDeg: 90f);
-            BuildJetty(jetties, wood, waterY, "JettyIsland",
-                new Vector3(-40f, 0f, -130f), yawDeg: 205f);
-
+            // Destinations live at the island ports now (BuildIslandDock); the harbor
+            // keeps only the home mooring.
             // Home dock mooring: bollard + lantern on the existing pier, station at its edge.
             var home = new GameObject("HomeMooring");
             home.transform.SetParent(jetties.transform, false);
@@ -3315,7 +3781,7 @@ namespace Game.EditorTools
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] Jetties placed: JettyEast, JettyIsland, HomeMooring (bollard toggles moor/cast off; lanterns auto-light in shade).");
+            Debug.Log("[ShipTestAreaBuilder] Home mooring placed (bollard toggles moor/cast off; island ports carry the rest).");
         }
 
         // A free-standing wooden jetty: planked deck at DockTopY on posts, a mooring bollard

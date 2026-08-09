@@ -42,6 +42,8 @@ namespace Game.Gameplay
 
         /// <summary>True on every client while this player carries a prop (drives the carry animation).</summary>
         public bool IsHolding => _heldSync != null;
+        /// <summary>What this player is carrying (synced; null when empty-handed).</summary>
+        public Grabbable Held => _heldSync;
 
         private Grabbable _held;            // server-only handle for grab/throw logic
         private Collider _carrier;          // this player's own collider, ignored while carrying

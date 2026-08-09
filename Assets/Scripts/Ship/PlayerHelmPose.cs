@@ -9,7 +9,7 @@ namespace Game.Ship
     /// the synced helm state — the body transform, camera and simulation are untouched, so
     /// look stays free while the model visibly works the wheel.
     /// </summary>
-    [DefaultExecutionOrder(60)] // after PlayerRockView: compose on the rocked model pose
+    [DefaultExecutionOrder(60)] // after PlayerAvatar (40) rebuilds modelRoot's base pose
     public class PlayerHelmPose : MonoBehaviour
     {
         [Tooltip("Where the hands grip, as an angle either side of the wheel's top (deg).")]
@@ -65,9 +65,9 @@ namespace Game.Ship
             }
             Transform wheel = _helm.WheelVisual;
 
-            // Face the wheel: yaw the whole model about its feet, on top of whatever pose
-            // the deck rock left it in. The body transform (and with it the camera pivot)
-            // stays free, so looking around while steering never twists the stance away.
+            // Face the wheel: yaw the whole model about its feet, on top of the base pose
+            // PlayerAvatar rebuilt this frame. The body transform (and with it the camera
+            // pivot) stays free, so looking around while steering never twists the stance.
             Vector3 toWheel = wheel.position - transform.position;
             toWheel.y = 0f;
             if (toWheel.sqrMagnitude > 1e-4f)

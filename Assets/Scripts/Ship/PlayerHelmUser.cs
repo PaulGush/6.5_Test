@@ -43,6 +43,7 @@ namespace Game.Ship
 
         private PlayerInputReader _reader;
         private ShipRider _rider;
+        private Game.Gameplay.PlayerGrabber _grabber; // hands full = stations don't take the key
         private ShipHelm _helmInView;             // owner-only, refreshed each frame
         private ShipSailTarget _sailInView;       // owner-only, refreshed each frame
         private DockMooringTarget _mooringInView; // owner-only, refreshed each frame
@@ -56,6 +57,7 @@ namespace Game.Ship
         {
             _reader = GetComponent<PlayerInputReader>();
             _rider = GetComponent<ShipRider>();
+            _grabber = GetComponent<Game.Gameplay.PlayerGrabber>();
         }
 
         private void Update()
@@ -67,7 +69,12 @@ namespace Game.Ship
             _sailInView = null;
             _mooringInView = null;
             _anchorInView = null;
-            if (gameplay && !Engaged) FindStationInView();
+            // Hands full: the Interact press belongs to the grabber (setting the crate
+            // down), even with a mast or bollard under the crosshair — carrying cargo to
+            // the hold must never furl the sails. All the *InView flags stay false, so
+            // PlayerGrabber's helm-defers-first check agrees with us automatically.
+            bool handsFull = _grabber != null && _grabber.IsHolding;
+            if (gameplay && !Engaged && !handsFull) FindStationInView();
             LookingAtHelm = _helmInView != null;
 
             if (gameplay && _reader != null && _reader.Interact != null

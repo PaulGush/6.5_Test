@@ -21,7 +21,7 @@ namespace Game.Player
     /// first-person, so the head doesn't block the view but the shadow remains.
     /// </summary>
     [RequireComponent(typeof(PlayerController))]
-    [DefaultExecutionOrder(40)] // after PlayerRockView (0) rewrites modelRoot, before PlayerHelmPose (60)
+    [DefaultExecutionOrder(40)] // rewrites modelRoot's base pose, before PlayerHelmPose (60) composes on it
     public class PlayerAvatar : NetworkBehaviour
     {
         [Tooltip("Root of the nested character model (must carry the humanoid Animator).")]
@@ -103,6 +103,9 @@ namespace Game.Player
         private AirPhase _airPhase;
         private float _airTime, _landPulse;
 
+        private Vector3 _modelRestPos;    // modelRoot's authored local pose, rebuilt each frame
+        private Quaternion _modelRestRot;
+
         private void Awake()
         {
             _controller = GetComponent<PlayerController>();
@@ -122,6 +125,8 @@ namespace Game.Player
                 return;
             }
 
+            _modelRestPos = modelRoot.localPosition;
+            _modelRestRot = modelRoot.localRotation;
             _renderers = modelRoot.GetComponentsInChildren<Renderer>(true);
             BuildGraph(animator);
         }
@@ -201,12 +206,21 @@ namespace Game.Player
             ComputeTargets();
             ApplyWeights(dt);
 
+            // Rebuild the model's base pose absolutely every frame (a job the retired
+            // PlayerRockView used to do as a side effect): the swim/death lift below and
+            // PlayerHelmPose's stance (order 60) compose on a fresh base instead of
+            // accumulating frame over frame.
+            if (modelRoot != null)
+            {
+                modelRoot.localPosition = _modelRestPos;
+                modelRoot.localRotation = _modelRestRot;
+            }
+
             // Visual-only: raise the model while stroking forward so the swimmer stays
             // visible from third person, and float a dead body up to the surface (the
             // death pose lies at feet level, 1.25m under the waterline). Both are gated
             // by the swim blend, so a land or deck death lies where it fell. Safe as a
-            // += because PlayerRockView (execution order 0) rewrites modelRoot's
-            // transform every frame before this runs.
+            // += because the base pose was just rebuilt above.
             float lift = _swimT * Mathf.Clamp01(_planarSpeed / 0.7f) * swimForwardLift * (1f - _deadT)
                 + _swimT * _deadT * deadFloatLift;
             if (lift > 0.0005f && modelRoot != null)
@@ -250,7 +264,7 @@ namespace Game.Player
 
             // Death is a one-shot: restart the collapse the moment the flag arrives, in
             // any environment — ashore it crumples where it stood, aboard it rides the
-            // rocking deck (PlayerRockView keeps composing), in water it floats up.
+            // really-tilting deck via parenting, in water it floats up.
             if (isDead && !_wasDead && _hasClip[SlotDeath])
                 _playables[SlotDeath].SetTime(0);
             _wasDead = isDead;

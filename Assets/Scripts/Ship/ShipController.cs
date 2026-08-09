@@ -4,10 +4,11 @@ using UnityEngine;
 namespace Game.Ship
 {
     /// <summary>
-    /// Server-authoritative free-moving ship. A genuine dynamic Rigidbody — collisions with rocks
-    /// and docks produce real momentum, glancing bounces, and spin — but constrained to the water
-    /// plane (Y position and pitch/roll frozen), so there is no buoyancy simulation to destabilise
-    /// the deck or the players standing on it.
+    /// Server-authoritative free-moving ship. A genuine dynamic Rigidbody with NO rotation
+    /// constraints — collisions with rocks and docks produce real momentum, glancing bounces
+    /// and spin, the swell drives real heave (DriveHeave) and REAL pitch/roll (DriveTilt,
+    /// through angular velocity, never a rotation teleport), so the deck everyone stands on
+    /// genuinely tilts.
     ///
     /// Motion model, applied by the server each physics step:
     ///  - Thrust along the bow, scaled by the current sail level.
@@ -84,10 +85,29 @@ namespace Game.Ship
                  "hull that shoulders through chop; the swell still carries it up and over.")]
         [SerializeField] private float heaveResponse = 2.5f;
 
+        [Header("Tilt (REAL pitch/roll on the hull)")]
+        [Tooltip("Physical pitch soft limit (deg). The deck genuinely tilts: cargo slides, masts lean.")]
+        [SerializeField] private float maxPitchDeg = 3.5f;
+        [Tooltip("Physical roll soft limit (deg). Big enough that slick cargo slides in heavy seas.")]
+        [SerializeField] private float maxRollDeg = 9f;
+        [Tooltip("Natural frequency (rad/s) of the hull's tilt response to the wave plane.")]
+        [SerializeField] private float tiltStiffness = 1.5f;
+        [Tooltip("Damping ratio of the tilt response (<1 rings briefly).")]
+        [SerializeField] private float tiltDamping = 0.55f;
+        [Tooltip("Heel under helm: roll (deg) per (rad/s yaw rate x m/s speed). Sign flips heel direction.")]
+        [SerializeField] private float heelFactor = 2.2f;
+        [Tooltip("How quickly the hull chases its target attitude (1/s) — the tilt twin of heaveResponse.")]
+        [SerializeField] private float tiltResponse = 5f;
+
         private Rigidbody _rb;
+        private ShipFloatView _floatView;      // wave-sample extents live there
+        private float _tiltPitch, _tiltRoll;   // oscillator state (deg, unbounded)
+        private float _tiltPitchV, _tiltRollV;
         private float _weighDoneAt;       // server: when the running haul brings the anchor up
+        private bool _tiltLiveLogged;     // one-shot proof in the console that tilt is physical
+        private float _tiltStallSince;    // attitude ignoring the drive since (0 = tracking)
+        private bool _tiltStallWarned;
         [SyncVar] private float _planeY;  // the calm-water baseline the heave oscillates around
-        private bool _warnedPlanarDrift;  // server: log the first correction so drift causes surface
         private Game.Gameplay.WaterSurface _water;
         private float _nextWaterScan;
 
@@ -99,12 +119,14 @@ namespace Game.Ship
         private void Awake()
         {
             _rb = GetComponent<Rigidbody>();
-            // Planar constraint on rotation only: X/Z translation and yaw are free, and the
-            // hull's HEIGHT is driven onto the wave field each step — the ship really rides
-            // the sea. Tilt stays visual (ShipFloatView) so the walkable colliders and
-            // everything networked keep a level deck.
-            _rb.constraints = RigidbodyConstraints.FreezeRotationX
-                            | RigidbodyConstraints.FreezeRotationZ;
+            _floatView = GetComponent<ShipFloatView>();
+            // A genuinely free body: no constraints at all. Height rides the wave field
+            // (DriveHeave) and pitch/roll chase the wave plane (DriveTilt) — both through
+            // velocities the solver integrates, so the walkable colliders, parented crew
+            // and lashed cargo all live on a deck that REALLY moves. Commanding the
+            // angular velocity fresh each step is what keeps collisions from winding up
+            // uncontrolled spin — the job the old FreezeRotationX/Z lock used to do.
+            _rb.constraints = RigidbodyConstraints.None;
             _rb.useGravity = false;
             _rb.linearDamping = 0f;   // drag is modelled explicitly, per-axis, in FixedUpdate
             _rb.angularDamping = 0f;
@@ -207,10 +229,13 @@ namespace Game.Ship
             float extra = _anchored ? anchorDrag : 0f;
             _rb.AddForce(-fwd * (forwardDrag + extra) - lat * (lateralDrag + extra),
                 ForceMode.Acceleration);
-            _rb.AddTorque(-_rb.angularVelocity * (yawDrag + extra), ForceMode.Acceleration);
+            // Yaw only: pitch/roll velocities belong to DriveTilt's chase — damping them
+            // here (triply so at anchor) would fight the swell's hold on the hull.
+            _rb.AddTorque(0f, -_rb.angularVelocity.y * (yawDrag + extra), 0f,
+                ForceMode.Acceleration);
 
             DriveHeave(v);
-            EnforceLevel();
+            DriveTilt(Time.fixedDeltaTime, fwdSpeed);
         }
 
         // Buoyant heave: chase the wave field's height under the hull (sampled at a few
@@ -247,29 +272,97 @@ namespace Game.Ship
             _rb.linearVelocity = new Vector3(velocity.x, vy, velocity.z);
         }
 
-        // Level lock, belt-and-braces on top of the Rigidbody constraints: whatever manages
-        // to pitch or roll the hull (a collider glitch, an unexpected torque path), flatten
-        // it back to yaw-only before anyone can see it, and surface the first occurrence in
-        // the log so the cause can be chased. Heave is legitimate now — the waves own it.
+        // REAL tilt: the hull rigidbody genuinely pitches and rolls — colliders, parented
+        // crew and resting cargo all live on a tilting deck (cargo slides; someday, with
+        // true buoyancy forces, a ship can broach and sink). The target attitude comes
+        // from the same least-squares wave-plane fit the old visual layer used (5
+        // stations x 2 sides so short chop can't alias into inverted tilt), plus heel
+        // under helm; a damped oscillator makes waves shoulder the hull rather than
+        // glue it to the surface. The body is steered there through ANGULAR VELOCITY —
+        // the tilt twin of DriveHeave's vertical chase — never a rotation write, which
+        // the solver is free to ignore or judder through; re-commanding the velocity
+        // every step is also what stops collisions winding up uncontrolled spin now
+        // that the rotation constraints are gone.
         [Server]
-        private void EnforceLevel()
+        private void DriveTilt(float dt, float fwdSpeed)
         {
-            Vector3 e = _rb.rotation.eulerAngles;
-            bool tilted = Mathf.Abs(Mathf.DeltaAngle(0f, e.x)) > 0.05f
-                       || Mathf.Abs(Mathf.DeltaAngle(0f, e.z)) > 0.05f;
-            if (!tilted) return;
+            float pitchT = 0f, rollT = 0f;
+            float halfLength = _floatView != null ? _floatView.SampleHalfLength : 12f;
+            float halfBeam = _floatView != null ? _floatView.SampleHalfBeam : 2.8f;
 
-            _rb.rotation = Quaternion.Euler(0f, e.y, 0f);
-            Vector3 av = _rb.angularVelocity;
-            _rb.angularVelocity = new Vector3(0f, av.y, 0f);
-
-            if (!_warnedPlanarDrift)
+            if (_water != null)
             {
-                _warnedPlanarDrift = true;
-                Debug.LogWarning("[ShipController] Corrected off-level drift (tilt). " +
-                                 "Something is fighting the rotation constraints — check for stray colliders/forces.", this);
+                const int stations = 5;
+                float zExtent = halfLength * 0.55f;
+                float sumZH = 0f, sumXH = 0f, sumZZ = 0f, sumXX = 0f;
+                for (int zi = 0; zi < stations; zi++)
+                {
+                    float z = Mathf.Lerp(-zExtent, zExtent, zi / (stations - 1f));
+                    for (int side = -1; side <= 1; side += 2)
+                    {
+                        float x = halfBeam * side;
+                        Vector3 p = transform.TransformPoint(x, 0f, z);
+                        float h = _water.HeightAt(p.x, p.z) - _water.SurfaceY;
+                        sumZH += z * h; sumZZ += z * z;
+                        sumXH += x * h; sumXX += x * x;
+                    }
+                }
+                pitchT = -Mathf.Atan(sumZH / sumZZ) * Mathf.Rad2Deg; // stern high = bow down
+                rollT = Mathf.Atan(sumXH / sumXX) * Mathf.Rad2Deg;   // starboard high = roll to port
             }
+
+            // Heel under helm: yaw rate x speed leans the hull through a turn.
+            rollT += heelFactor * _rb.angularVelocity.y * fwdSpeed;
+
+            float w2 = tiltStiffness * tiltStiffness;
+            float d = 2f * tiltDamping * tiltStiffness;
+            _tiltPitchV += ((pitchT - _tiltPitch) * w2 - d * _tiltPitchV) * dt;
+            _tiltRollV += ((rollT - _tiltRoll) * w2 - d * _tiltRollV) * dt;
+            _tiltPitch += _tiltPitchV * dt;
+            _tiltRoll += _tiltRollV * dt;
+
+            float targetPitch = SoftLimit(_tiltPitch, maxPitchDeg);
+            float targetRoll = SoftLimit(_tiltRoll, maxRollDeg);
+
+            // X/Z angular velocity chases the target attitude; yaw (Y) stays whatever
+            // the rudder and drag made it. Clamped so a big error (spawn, teleport)
+            // rights the ship briskly, not violently.
+            Vector3 e = _rb.rotation.eulerAngles;
+            float pitchErr = Mathf.DeltaAngle(Mathf.DeltaAngle(0f, e.x), targetPitch);
+            float rollErr = Mathf.DeltaAngle(Mathf.DeltaAngle(0f, e.z), targetRoll);
+            Vector3 localAV = Quaternion.Inverse(_rb.rotation) * _rb.angularVelocity;
+            localAV.x = Mathf.Clamp(pitchErr * tiltResponse, -40f, 40f) * Mathf.Deg2Rad;
+            localAV.z = Mathf.Clamp(rollErr * tiltResponse, -40f, 40f) * Mathf.Deg2Rad;
+            _rb.angularVelocity = _rb.rotation * localAV;
+
+            // Insurance against flying blind either way: log once when the hull's REAL
+            // attitude first comes alive, and warn if it persistently ignores the drive
+            // (which would look exactly like "the tilt is still only visual").
+            float actualPitch = Mathf.DeltaAngle(0f, e.x);
+            float actualRoll = Mathf.DeltaAngle(0f, e.z);
+            float actual = Mathf.Abs(actualPitch) + Mathf.Abs(actualRoll);
+            if (!_tiltLiveLogged && actual > 1.5f)
+            {
+                _tiltLiveLogged = true;
+                Debug.Log($"[ShipController] Physical tilt live: pitch {actualPitch:F1}°, roll {actualRoll:F1}°.");
+            }
+            float want = Mathf.Abs(targetPitch) + Mathf.Abs(targetRoll);
+            if (want > 1.5f && actual < 0.25f * want)
+            {
+                if (_tiltStallSince <= 0f) _tiltStallSince = Time.time;
+                else if (!_tiltStallWarned && Time.time - _tiltStallSince > 4f)
+                {
+                    _tiltStallWarned = true;
+                    Debug.LogWarning($"[ShipController] Hull attitude is NOT following the tilt drive " +
+                        $"(wants pitch {targetPitch:F1}° roll {targetRoll:F1}°, sitting at " +
+                        $"{actualPitch:F1}°/{actualRoll:F1}°). Something is zeroing the angular velocity.", this);
+                }
+            }
+            else _tiltStallSince = 0f;
         }
+
+        private static float SoftLimit(float x, float max) =>
+            max <= 0f ? 0f : max * (float)System.Math.Tanh(x / max);
 
     }
 }
