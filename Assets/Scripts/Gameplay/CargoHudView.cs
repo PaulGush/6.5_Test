@@ -5,7 +5,7 @@ using UnityEngine.UI;
 namespace Game.Gameplay
 {
     /// <summary>
-    /// Top-right cargo readout: what's lashed in the ship's hold and what the crew has
+    /// Top-right cargo readout: the value riding the ship's deck and what the crew has
     /// delivered. Self-bootstrapping programmatic uGUI (same pattern as the health HUD),
     /// polling the synced CargoHold / CargoManager each frame like RunHudView does.
     /// </summary>
@@ -70,7 +70,7 @@ namespace Game.Gameplay
             }
 
             string stowed = _hold != null
-                ? $"Cargo in hold  {_hold.StowedCount}  ({_hold.StowedValue}g)"
+                ? $"Cargo aboard  {_hold.AboardCount}  ({_hold.AboardValue}g)"
                 : "";
             string delivered = _manager != null && _manager.Delivered > 0
                 ? $"Delivered  {_manager.Delivered}g"
