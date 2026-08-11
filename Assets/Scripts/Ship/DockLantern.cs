@@ -7,13 +7,15 @@ namespace Game.Ship
     /// In Auto mode it lights itself when its spot lies in shade (a ray from the lamp
     /// toward the main directional light, decided once at load) — and every Auto lantern
     /// lights at nightfall and snuffs at dawn, following the scene's
-    /// <see cref="Game.Gameplay.DayNightCycle"/>. Lit/Unlit force the state for
-    /// hand-authored placements. Purely visual and client-local: no networking — the
-    /// day/night clock itself is already synced.
+    /// <see cref="Game.Gameplay.DayNightCycle"/>. Night follows the clock strictly —
+    /// no shade test — for flames that must be dark all day even in a shaded spot
+    /// (the skull's eye sockets). Lit/Unlit force the state for hand-authored
+    /// placements. Purely visual and client-local: no networking — the day/night
+    /// clock itself is already synced.
     /// </summary>
     public class DockLantern : MonoBehaviour
     {
-        public enum LanternMode { Auto, Lit, Unlit }
+        public enum LanternMode { Auto, Lit, Unlit, Night }
 
         [Tooltip("Auto: lit only when the lamp sits in shadow of the main directional light.")]
         [SerializeField] private LanternMode mode = LanternMode.Auto;
@@ -29,6 +31,9 @@ namespace Game.Ship
             glow = glowRef;
         }
 
+        /// <summary>Editor-tooling hook: pick the mode at build time.</summary>
+        public void SetMode(LanternMode m) => mode = m;
+
         private bool _autoShade; // decided once at load: does this spot sit in shade by day?
 
         private void Start()
@@ -43,8 +48,13 @@ namespace Game.Ship
         {
             var cycle = Game.Gameplay.DayNightCycle.Active;
             bool night = cycle != null && cycle.IsNight;
-            Apply(mode == LanternMode.Lit
-                  || (mode == LanternMode.Auto && (_autoShade || night)));
+            Apply(mode switch
+            {
+                LanternMode.Lit => true,
+                LanternMode.Unlit => false,
+                LanternMode.Night => night,
+                _ => _autoShade || night,
+            });
         }
 
         private bool InShade()
