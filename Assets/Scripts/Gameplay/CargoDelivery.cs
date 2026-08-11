@@ -4,10 +4,10 @@ using UnityEngine;
 namespace Game.Gameplay
 {
     /// <summary>
-    /// The dock's delivery pad: loose cargo set down inside converts to delivered gold
-    /// (via <see cref="CargoManager"/>) and vanishes. Server-only sensing on a slow tick,
-    /// like PressurePlate — items must be out of hand and at rest, so hurling a chest at
-    /// the pad from the rail doesn't count until it lands.
+    /// The loot cave's delivery zone: loose cargo set down inside converts to delivered
+    /// gold (via <see cref="CargoManager"/>) and vanishes. Server-only sensing on a slow
+    /// tick, like PressurePlate — items must be out of hand and at rest, so hurling a
+    /// chest into the cave mouth doesn't count until it lands.
     /// </summary>
     [RequireComponent(typeof(BoxCollider))]
     public class CargoDelivery : MonoBehaviour

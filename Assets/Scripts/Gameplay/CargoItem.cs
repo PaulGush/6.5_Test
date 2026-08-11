@@ -13,8 +13,8 @@ namespace Game.Gameplay
     /// Dropped in the sea it floats, so a spilled crate is a swim, not a loss. The lash
     /// machinery (ServerSetStowed: parent + kinematic + NT off, mirroring the held-state
     /// pattern) is kept for a future manual lash-down job; nothing auto-lashes.
-    /// The server owns all state; <see cref="Game.Ship.CargoHold"/> counts what rides in
-    /// the hold, the dock's <see cref="CargoDelivery"/> converts it to score.
+    /// The server owns all state; <see cref="Game.Ship.CargoHold"/> counts what rides
+    /// the deck, the loot cave's <see cref="CargoDelivery"/> converts it to score.
     /// </summary>
     [RequireComponent(typeof(Grabbable))]
     public class CargoItem : NetworkBehaviour

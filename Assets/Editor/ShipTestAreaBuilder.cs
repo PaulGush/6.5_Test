@@ -61,7 +61,7 @@ namespace Game.EditorTools
         private const string RopeMatPath = "Assets/Art/Materials/Sea_Rope.mat";
         private const string SandMatPath = "Assets/Art/Materials/Sea_Sand.mat";
         private const string IslandMeshPath = "Assets/Art/Models/StartIsland.asset";
-        private const string IslandMeshName = "StartIsland2"; // bump when the island layout changes
+        private const string IslandMeshName = "StartIsland5"; // bump when the island layout changes
 
         // Bump when generated-collider logic changes: prefabs carrying an older tag are rebuilt
         // and re-moored by the auto-maintenance pass.
@@ -176,12 +176,17 @@ namespace Game.EditorTools
                 EnsureSeaWavesOnce();
                 EnsureSeaFollowOnce();
                 EnsureJettiesOnce();
+                EnsureOceanFloorOnce();
                 EnsureStartIslandOnce();
                 EnsureDockShoreStairsOnce();
                 EnsureDockPilesOnce();
+                EnsureSyntyDockOnce();
                 EnsureArchipelagoOnce();
                 EnsureSharksOnce();
                 EnsureCargoOnce();
+                EnsureSkullEyeFiresOnce();
+                EnsureDeliveryFxOnce();
+                EnsureWaterRipplesOnce();
                 EnsureShipMoored();
                 EnsureDayNightOnce();
                 EnsureSkyOnce();
@@ -1218,6 +1223,110 @@ namespace Game.EditorTools
             PatchPrefabShipFloat(spec);
         }
 
+        [MenuItem("Tools/Ship/Wire Water Ripples")]
+        public static void WireWaterRipplesMenu()
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            EnsureWaterRipplesOnce();
+            Debug.Log("[ShipTestAreaBuilder] Water ripple wiring pass complete.");
+        }
+
+        // Maintenance: dynamic water ripples — the ring-buffer system on the water plane,
+        // and waterline emitters on everything that floats: the moored ship's prefab, the
+        // player prefab (rings while swimming/wading), scene cargo, and the sharks.
+        private static void EnsureWaterRipplesOnce()
+        {
+            PatchPrefabRippleEmitter();
+            PatchPlayerRippleEmitter();
+
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+
+            bool changed = false;
+            Transform water = harbor.transform.Find("Water");
+            if (water != null && water.GetComponent<WaterRippleSystem>() == null)
+            {
+                water.gameObject.AddComponent<WaterRippleSystem>();
+                changed = true;
+            }
+
+            foreach (var shark in Object.FindObjectsByType<SharkView>(
+                         FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (shark.GetComponent<WaterRippleEmitter>() == null)
+                {
+                    shark.gameObject.AddComponent<WaterRippleEmitter>().ConfigureShark();
+                    changed = true;
+                }
+
+            foreach (var cargo in Object.FindObjectsByType<CargoItem>(
+                         FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (cargo.GetComponent<WaterRippleEmitter>() == null)
+                {
+                    cargo.gameObject.AddComponent<WaterRippleEmitter>().ConfigureFloater();
+                    changed = true;
+                }
+
+            if (!changed) return;
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Water ripples wired: system on the sea plane, " +
+                      "emitters on scene cargo and sharks.");
+        }
+
+        private static void PatchPlayerRippleEmitter()
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+            if (asset == null || asset.GetComponent<WaterRippleEmitter>() != null) return;
+            GameObject contents = PrefabUtility.LoadPrefabContents(PlayerPrefabPath);
+            try
+            {
+                contents.AddComponent<WaterRippleEmitter>().ConfigureSwimmer();
+                PrefabUtility.SaveAsPrefabAsset(contents, PlayerPrefabPath);
+                Debug.Log("[ShipTestAreaBuilder] Player.prefab: ripple emitter added " +
+                          "(rings while swimming or wading, silent on deck and dock).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        // In-place patch (same shape as PatchPrefabShipFloat): hull waterline ripple
+        // stations for the moored ship's prefab, sized from its wave-sampling footprint.
+        private static void PatchPrefabRippleEmitter()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            var current = harbor != null ? harbor.GetComponentInChildren<ShipController>(true) : null;
+            if (current == null) return;
+            ShipSpec spec = current.name.Contains("Medium") ? MediumSpec
+                          : current.name.Contains("Large") ? LargeSpec : WarshipSpec;
+
+            string path = PrefabPathFor(spec);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (asset == null || asset.GetComponent<WaterRippleEmitter>() != null) return;
+
+            GameObject contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var floatView = contents.GetComponent<ShipFloatView>();
+                float halfLength = floatView != null ? floatView.SampleHalfLength : 12f;
+                float halfBeam = floatView != null ? floatView.SampleHalfBeam : 2.8f;
+                contents.AddComponent<WaterRippleEmitter>().ConfigureShip(halfLength, halfBeam);
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[ShipTestAreaBuilder] {path}: hull ripple emitter added " +
+                          "(bow/stern/beam waterline stations). Colliders untouched.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
         // Maintenance: give the moored ship's prefab its bow anchor station once.
         private static void EnsureAnchorStationOnce()
         {
@@ -1232,7 +1341,7 @@ namespace Game.EditorTools
             PatchPrefabAnchorStation(spec);
             PatchPrefabAnchorChain(spec);
             PatchPrefabHullAnchor(spec);
-            PatchPrefabCargoHold(spec);
+            PatchPrefabCargoCounter(spec);
             PatchPrefabMotionTuning(spec);
         }
 
@@ -1266,203 +1375,37 @@ namespace Game.EditorTools
             }
         }
 
-        // Stowage on the main deck: a trigger volume just aft of the gangway where cargo
-        // lashes down (CargoItem parents to the ship) once set down at rest, plus a
-        // painted deck patch so the crew can see where to stack. CargoHold must live on
-        // the ship ROOT (Mirror syncs only behaviours on the identity object). In-place
-        // patch; hand-adjusted colliders untouched.
-        private static void PatchPrefabCargoHold(ShipSpec spec)
+        // The marked stow zone is retired (Paul, 2026-08-10): nothing is lashed, cargo
+        // rides loose ANYWHERE on deck, and CargoHold now counts deck-riders straight
+        // from the deck-carry state — no volume needed. This patch guarantees the
+        // counter component exists (it feeds the value HUD) and strips the old zone
+        // children: trigger volume, glowing frame, CARGO lettering, coaming lip.
+        // In-place patch; hand-adjusted colliders untouched.
+        private static void PatchPrefabCargoCounter(ShipSpec spec)
         {
             string path = PrefabPathFor(spec);
             var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
             if (asset == null) return;
-            if (asset.GetComponentInChildren<CargoHold>(true) != null)
-            {
-                FixupCargoHoldVisuals(path); // already patched: make sure the zone reads
-                FixupCargoHoldCoaming(path);
-                return;
-            }
+
+            string[] zoneKids =
+                { "CargoHoldVolume", "CargoHoldFrame_v2", "CargoHoldFrame", "CargoHoldMark", "CargoHoldCoaming" };
+            bool hasZone = zoneKids.Any(k => FindDeep(asset.transform, k) != null);
+            bool hasHold = asset.GetComponent<CargoHold>() != null;
+            if (hasHold && !hasZone) return;
 
             GameObject contents = PrefabUtility.LoadPrefabContents(path);
             try
             {
-                var decks = contents.GetComponentsInChildren<BoxCollider>(true)
-                    .Where(b => b.name == "Deck" && !b.isTrigger).ToList();
-                if (decks.Count == 0) return;
-                float minY = decks.Min(d => d.center.y);
-                var main = decks.Where(d => d.center.y < minY + 0.25f).ToList();
-                float top = main[0].center.y + main[0].size.y * 0.5f;
-                float aftZ = main.Min(d => d.center.z);
-                float width = Mathf.Min(4.2f, main.Max(d => d.size.x) - 1f);
-                Vector3 c = new Vector3(0f, top + 0.75f, aftZ + 1.2f);
-
-                var holdGo = new GameObject("CargoHoldVolume");
-                holdGo.transform.SetParent(contents.transform, false);
-                var box = holdGo.AddComponent<BoxCollider>();
-                box.isTrigger = true;
-                box.center = c;
-                box.size = new Vector3(width, 1.5f, 3.4f);
-
-                BuildCargoHoldVisuals(contents.transform, top, c.z, width);
-
-                var hold = contents.AddComponent<CargoHold>();
-                hold.SetVolume(box);
-
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo hold added on the main deck " +
-                          $"(z {c.z:F1}, {width:F1}m wide). Colliders untouched.");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-            FixupCargoHoldCoaming(path);
-        }
-
-        // The hold's coaming: a low lip of REAL colliders around the stow zone. Cargo
-        // rides the deck loose and genuinely slides in a heel now, so the coaming is
-        // what keeps a stacked pile aboard through mild seas — and what a hard roll
-        // spills it over. Kinematic child body, matching the deck-strip pattern, so
-        // cargo and player contacts can never shove the hull through it.
-        private static void FixupCargoHoldCoaming(string path)
-        {
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (asset == null || FindDeep(asset.transform, "CargoHoldCoaming") != null) return;
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                Transform volumeT = FindDeep(contents.transform, "CargoHoldVolume");
-                var volume = volumeT != null ? volumeT.GetComponent<BoxCollider>() : null;
-                if (volume == null) return;
-
-                Vector3 c = volume.center;
-                float width = volume.size.x, depth = volume.size.z;
-                float top = c.y - volume.size.y * 0.5f;
-                const float h = 0.2f, t = 0.14f; // low enough that players step over it
-
-                Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
-                var coaming = new GameObject("CargoHoldCoaming");
-                coaming.transform.SetParent(contents.transform, false);
-                var body = coaming.AddComponent<Rigidbody>();
-                body.isKinematic = true;
-                body.useGravity = false;
-
-                (Vector3 pos, Vector3 size)[] walls =
+                if (contents.GetComponent<CargoHold>() == null)
+                    contents.AddComponent<CargoHold>();
+                foreach (string k in zoneKids)
                 {
-                    (new Vector3(0f, top + h * 0.5f, c.z + depth * 0.5f + t * 0.5f), new Vector3(width + 2f * t, h, t)),
-                    (new Vector3(0f, top + h * 0.5f, c.z - depth * 0.5f - t * 0.5f), new Vector3(width + 2f * t, h, t)),
-                    (new Vector3(width * 0.5f + t * 0.5f, top + h * 0.5f, c.z), new Vector3(t, h, depth)),
-                    (new Vector3(-width * 0.5f - t * 0.5f, top + h * 0.5f, c.z), new Vector3(t, h, depth)),
-                };
-                foreach ((Vector3 pos, Vector3 size) w in walls)
-                {
-                    var col = coaming.AddComponent<BoxCollider>();
-                    col.center = w.pos;
-                    col.size = w.size;
-
-                    var viz = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                    viz.name = "Plank";
-                    viz.transform.SetParent(coaming.transform, false);
-                    viz.transform.localPosition = w.pos;
-                    viz.transform.localScale = w.size;
-                    Object.DestroyImmediate(viz.GetComponent<Collider>());
-                    viz.GetComponent<MeshRenderer>().sharedMaterial = wood;
-                }
-
-                PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo hold coaming added " +
-                          "(low lip retains sliding cargo; hard rolls spill it).");
-            }
-            finally
-            {
-                PrefabUtility.UnloadPrefabContents(contents);
-            }
-        }
-
-        // The stow zone must READ from across the deck: gold border frame + big flat
-        // CARGO lettering on the planks, the same gold language as the delivery pad.
-        private static void BuildCargoHoldVisuals(Transform root, float top, float zCenter, float width)
-        {
-            // Emissive gold: the frame only appears while a player carries cargo nearby
-            // (CargoHold toggles it), so it can afford to glow like guidance UI.
-            Material gold = GetOrCreateEmissiveMaterial(
-                "Assets/Art/Materials/Sea_CargoGlow.mat", new Color(0.95f, 0.75f, 0.25f));
-            Material dark = GetOrCreateMaterial(
-                "Assets/Art/Materials/Sea_CargoMark.mat", new Color(0.24f, 0.16f, 0.1f), 0.05f);
-
-            var visuals = new GameObject("CargoHoldFrame_v2");
-            visuals.transform.SetParent(root, false);
-
-            var fill = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            fill.name = "Fill";
-            fill.transform.SetParent(visuals.transform, false);
-            fill.transform.localPosition = new Vector3(0f, top + 0.015f, zCenter);
-            fill.transform.localScale = new Vector3(width, 0.03f, 3.4f);
-            Object.DestroyImmediate(fill.GetComponent<Collider>());
-            fill.GetComponent<MeshRenderer>().sharedMaterial = dark;
-
-            const float depth = 3.4f, strip = 0.16f, stripH = 0.05f;
-            foreach ((Vector3 pos, Vector3 scale) in new[]
-            {
-                (new Vector3(0f, top + 0.025f, zCenter + depth * 0.5f), new Vector3(width, stripH, strip)),
-                (new Vector3(0f, top + 0.025f, zCenter - depth * 0.5f), new Vector3(width, stripH, strip)),
-                (new Vector3(width * 0.5f, top + 0.025f, zCenter), new Vector3(strip, stripH, depth)),
-                (new Vector3(-width * 0.5f, top + 0.025f, zCenter), new Vector3(strip, stripH, depth)),
-            })
-            {
-                var edge = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                edge.name = "Edge";
-                edge.transform.SetParent(visuals.transform, false);
-                edge.transform.localPosition = pos;
-                edge.transform.localScale = scale;
-                Object.DestroyImmediate(edge.GetComponent<Collider>());
-                edge.GetComponent<MeshRenderer>().sharedMaterial = gold;
-            }
-
-            var textGo = new GameObject("CargoText");
-            textGo.transform.SetParent(visuals.transform, false);
-            textGo.transform.localPosition = new Vector3(0f, top + 0.045f, zCenter);
-            // Flat on the planks, top toward the stern: read right walking aft from the gangway.
-            textGo.transform.localRotation = Quaternion.Euler(90f, 180f, 0f);
-            var text = textGo.AddComponent<TextMesh>();
-            text.text = "CARGO";
-            text.anchor = TextAnchor.MiddleCenter;
-            text.alignment = TextAlignment.Center;
-            text.fontSize = 64;
-            text.characterSize = 0.28f;
-            text.color = new Color(0.85f, 0.7f, 0.3f);
-            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            text.font = font;
-            textGo.GetComponent<MeshRenderer>().sharedMaterial = font.material;
-        }
-
-        // Migration for prefabs holding earlier hold visuals (dark patch, always-on frame).
-        private static void FixupCargoHoldVisuals(string path)
-        {
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (FindDeep(asset.transform, "CargoHoldFrame_v2") != null) return;
-
-            GameObject contents = PrefabUtility.LoadPrefabContents(path);
-            try
-            {
-                var hold = contents.GetComponentInChildren<CargoHold>(true);
-                Transform volumeT = FindDeep(contents.transform, "CargoHoldVolume");
-                var volume = volumeT != null ? volumeT.GetComponent<BoxCollider>() : null;
-                if (hold == null || volume == null) return;
-
-                foreach (string old in new[] { "CargoHoldMark", "CargoHoldFrame" })
-                {
-                    Transform t = FindDeep(contents.transform, old);
+                    Transform t = FindDeep(contents.transform, k);
                     if (t != null) Object.DestroyImmediate(t.gameObject);
                 }
-
-                float top = volume.center.y - volume.size.y * 0.5f;
-                BuildCargoHoldVisuals(contents.transform, top, volume.center.z, volume.size.x);
-
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo hold zone reframed " +
-                          "(gold border + CARGO lettering).");
+                Debug.Log($"[ShipTestAreaBuilder] {path}: cargo stow zone removed (volume, frame, " +
+                          "coaming) — the hold counter now tallies cargo anywhere on deck.");
             }
             finally
             {
@@ -2031,14 +1974,7 @@ namespace Game.EditorTools
         /// every spawn point lands on the planks.</summary>
         private static void BuildDock(GameObject harbor)
         {
-            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
-
-            var dock = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            dock.name = "Dock";
-            dock.transform.SetParent(harbor.transform, false);
-            dock.transform.position = new Vector3(0f, DockTopY - 0.25f, DockCenterZ);
-            dock.transform.localScale = new Vector3(DockEdgeX * 2f, 0.5f, 16.9f);
-            dock.GetComponent<MeshRenderer>().sharedMaterial = wood;
+            BuildSyntyDockPlaza(harbor);
 
             // Checkpoint on the dock so respawns don't dump you somewhere else.
             var checkpoint = new GameObject("DockCheckpoint");
@@ -2052,6 +1988,158 @@ namespace Game.EditorTools
             var soTrigger = new SerializedObject(trigger);
             soTrigger.FindProperty("kind").enumValueIndex = (int)RunTrigger.Kind.Checkpoint;
             soTrigger.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // The home dock, from the Synty dock kit (same pieces as the island ports): two
+        // rows of SM_Bld_Dock_01/02 modules forming a ~7.6 x 18 m plank plaza whose walk
+        // surface lands at DockTopY. Anchoring is what matters: the EAST edge sits exactly
+        // at +DockEdgeX (the moored hull's clearance and the gangway both measure from
+        // it) and the NORTH face at the shore-stairs line; the leftover reach goes west
+        // and south over open water, where a pier can overhang freely. The kit pieces
+        // bring their own mesh colliders and piles, so no primitive slab or slab posts.
+        private const float DockPieceWidth = 3.8f; // measured from the meshes, like WalkY/Length
+        // v2: shore stairs + signal lantern joined the kit. v3: waterline corrected to
+        // the REAL -3.8 (deck rides ~4.7m over the sea) — stair cascade reaches the
+        // beach and hanging pile feet get underpinned to the seabed. v4: underpins and
+        // stair posts are kit poles, not primitives.
+        private const string DockKitTag = "DockKitTag_v4";
+
+        private static void BuildSyntyDockPlaza(GameObject harbor)
+        {
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0f;
+
+            var dock = new GameObject("Dock");
+            dock.transform.SetParent(harbor.transform, false);
+            new GameObject(DockKitTag).transform.SetParent(dock.transform, false);
+
+            string[] kit = { "SM_Bld_Dock_01", "SM_Bld_Dock_02" };
+            float pieceY = DockTopY - DockPieceWalkY;
+            float pileBottom = pieceY - 1.74f; // the kit piles' feet (measured from the meshes)
+            float northZ = DockCenterZ + 8.45f; // the primitive slab's north face: stairs land here
+            float[] rowX = { DockEdgeX - DockPieceWidth * 0.5f, DockEdgeX - DockPieceWidth * 1.5f };
+
+            for (int row = 0; row < rowX.Length; row++)
+                for (int i = 0; i < 5; i++)
+                {
+                    // Alternate 01/02 and flip yaw so the modular repeat doesn't read as a
+                    // pattern — EXCEPT at the north end: 02 carries a 0.4m end detail past
+                    // its pivot, which a 180 yaw would push into the shore stairs, so the
+                    // symmetric 01 always meets the beach.
+                    int variant = i == 0 ? 0 : (row + i) % 2;
+                    float yaw = i == 0 ? 0f : ((row + i) % 2) * 180f;
+                    var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                        $"{SyntyRoot}/Buildings/{kit[variant]}.prefab");
+                    if (prefab == null)
+                    {
+                        Debug.LogWarning($"[ShipTestAreaBuilder] Dock piece missing: {kit[variant]}");
+                        continue;
+                    }
+                    float zc = northZ - DockPieceLength * 0.5f - i * DockPieceLength;
+                    var piece = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                    piece.transform.SetParent(dock.transform, false);
+                    piece.transform.localPosition = new Vector3(rowX[row], pieceY, zc);
+                    piece.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+
+                    // Underpin: the kit piles stop 1.74 under the piece pivot, but the
+                    // deck rides ~4.7 m over the waterline and the seabed drops seaward —
+                    // toward the dock's south end the pile feet dangle in open water.
+                    // Wherever the analytic sand lies below a pile foot, continue that
+                    // pile with a kit pole driven into the seabed (Synty props only).
+                    // Dock_01 has piles at all four corners; Dock_02 only at local z=+1.5.
+                    foreach (float px in new[] { -1.5f, 1.5f })
+                        foreach (float pz in variant == 0 ? new[] { -1.5f, 1.5f } : new[] { 1.5f })
+                        {
+                            float wx = rowX[row] + px; // corner offsets are yaw-symmetric in x
+                            float wz = zc + (Mathf.Approximately(yaw, 0f) ? pz : -pz);
+                            float sand = waterY + IslandHeightWorld(wx, wz);
+                            if (sand > pileBottom + 0.2f) continue; // foot already buried
+                            AddKitPole(dock.transform, "PileUnderpin", wx, pileBottom + 0.3f, wz);
+                        }
+                }
+        }
+
+        // A kit pole (the same Synty tent pole the lanterns use) standing so its TIP is
+        // at topY. The pole is 3.3 m and every span we underpin is shorter: the surplus
+        // length runs on down through the sand and hides inside the island — which is
+        // what lets one unscaled prop serve every depth, with no primitive geometry.
+        private static void AddKitPole(Transform parent, string name, float x, float topY, float z)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(LanternPolePath);
+            if (prefab == null)
+            {
+                Debug.LogWarning("[ShipTestAreaBuilder] Kit pole prefab missing; support post skipped.");
+                return;
+            }
+            var pole = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+            pole.name = name;
+            pole.transform.SetParent(parent, false);
+            pole.transform.localPosition = new Vector3(x, topY - LanternPoleTopY, z);
+        }
+
+        // Migration: swap the primitive dock slab for the Synty-kit plaza. The slab
+        // posts go with it (the kit pieces carry their own piles); the shore-stair
+        // supports are rebuilt by BuildDockPiles, which sees the kit tag and skips the
+        // slab rows. Checkpoint, mooring, delivery pad, spawns and gangway all survive:
+        // they are siblings measured from DockTopY/DockEdgeX, which the plaza preserves.
+        private static void EnsureSyntyDockOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null) return;
+            Transform dock = harbor.transform.Find("Dock");
+            if (dock == null || dock.Find(DockKitTag) != null) return;
+            RebuildHarborDock(harbor);
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Home dock rebuilt from the Synty dock kit " +
+                      "(planks, piles, shore stairs and signal lantern; primitives retired).");
+        }
+
+        [MenuItem("Tools/Ship/Rebuild Harbor Dock")]
+        public static void RebuildHarborDockMenu()
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null)
+            {
+                Debug.LogError("[ShipTestAreaBuilder] No Harbor in the scene — run Tools > Ship > Build Ship Test Area first.");
+                return;
+            }
+            RebuildHarborDock(harbor);
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+        }
+
+        private static void RebuildHarborDock(GameObject harbor)
+        {
+            foreach (string name in new[] { "Dock", "DockPiles", "DockShoreStairs" })
+            {
+                Transform t = harbor.transform.Find(name);
+                if (t != null) Object.DestroyImmediate(t.gameObject);
+            }
+            BuildSyntyDockPlaza(harbor);
+            BuildDockShoreStairs(harbor);
+            BuildDockPiles(harbor); // kit dock + kit stairs leave it nothing to prop up
+
+            // The home mooring's lantern goes Synty too: same root (its NetworkIdentity
+            // and berth must survive), fresh furniture at BuildJetties' authored spot.
+            Transform home = harbor.transform.Find("Jetties/HomeMooring");
+            if (home != null)
+            {
+                foreach (string name in new[] { "LanternPost", "Lantern", "LanternLight", "LanternGlow" })
+                {
+                    Transform t = home.Find(name);
+                    if (t != null) Object.DestroyImmediate(t.gameObject);
+                }
+                Transform water = harbor.transform.Find("Water");
+                AddLantern(home.gameObject, new Vector3(-3.2f, 0f, -2.5f),
+                    water != null ? water.position.y : 0f, onDeck: true);
+            }
         }
 
         /// <summary>Boarding plank from the dock edge onto the ship's deck, through the
@@ -2193,12 +2281,33 @@ namespace Game.EditorTools
         // The home island the dock belongs to. Coastline and height are analytic and
         // deterministic (no RNG), so the mesh, the dressing placements and any future
         // queries all agree about where the sand is.
-        private const float IslandCenterZ = 38f;   // island centre, north of the dock
-        private const float IslandBaseRadius = 24f;
+        // Radius and centre moved together (+10 each) when the island grew for the loot
+        // cove: the south coast — and with it the dock burial, beach ramp and stairs —
+        // stays where it always was.
+        private const float IslandCenterZ = 48f;   // island centre, north of the dock
+        private const float IslandBaseRadius = 34f;
         private const float IslandDockLobe = 11f;  // extra reach toward the dock, burying its north end
-        private const float IslandSkirt = 12f;     // submerged sand ring outside the coastline
+        // Submerged sand ring outside the coastline. Sized so the skirt's slope runs DOWN
+        // PAST the ocean floor before the mesh ends (28m x 0.32 ~ 9m deep vs the floor's
+        // 8): coasts bury themselves in the seabed instead of ending on a floating rim,
+        // and every dock pile along the shore terminates inside sand.
+        private const float IslandSkirt = 28f;
         private const float BeachSlope = 0.32f;    // rise per metre inland along the beach (~18°)
-        private const float IslandPlateau = 3.2f;  // extra height of the grassy top above the beach crest
+        private const float IslandPlateau = 4.2f;  // extra height of the grassy top above the beach crest
+
+        // ---- the loot cove: a water inlet carved into the west coast, ending in a dry
+        // sand floor under a rock grotto where deliveries land. Everything below derives
+        // from these numbers, so the mesh carve, the cave rocks, the flora exclusion and
+        // the delivery zone all agree about where the cove is.
+        private const float CoveBearingDeg = 262f; // west coast, slightly south — visible leaving the berth
+        private const float CoveHeadDist = 14f;    // cove head (cave centre), m from the island centre
+        private const float CoveMouthDist = 46f;   // carve start, out past the coast so the cut blends into open sea
+        private const float CoveHalfWidth = 5.5f;  // nominal channel half-width; flares ~2x at the mouth
+        private const float CoveFloorY = 0.55f;    // dry cave floor above the waterline
+
+        private static Vector2 CoveDir => Bearing(CoveBearingDeg);            // island centre -> sea
+        private static Vector2 CoveHead => CoveDir * CoveHeadDist;            // island-local XZ
+        private static Vector2 CovePerp => new Vector2(CoveDir.y, -CoveDir.x);
 
         // Coastline radius (m from the island centre) toward angle a (radians, 0 = north/+Z).
         // A tight lobe reaches south toward the dock; elsewhere two sine bands roughen the
@@ -2231,8 +2340,89 @@ namespace Game.EditorTools
             float dx = x, dz = z - IslandCenterZ;
             float dist = Mathf.Sqrt(dx * dx + dz * dz);
             float h = IslandHeight(IslandRadius(Mathf.Atan2(dx, dz)) - dist);
+
+            // Headlands hugging the cove head: three gaussian shoulders that the cove
+            // carve then cuts through, leaving steep rock-painted walls around the
+            // hollow (and something for the skull shell's sides to bury into).
+            var p = new Vector2(dx, dz);
+            foreach ((Vector2 c, float amp, float foot) in new[]
+            {
+                (CoveHead + CovePerp * 11f, 3.5f, 8f),
+                (CoveHead - CovePerp * 11f, 3.5f, 8f),
+                (CoveDir * (CoveHeadDist - 9f), 3f, 9f),
+            })
+            {
+                float d = Vector2.Distance(p, c) / foot;
+                h += amp * Mathf.Exp(-d * d);
+            }
+
+            // The cove itself: dig-only, like the archipelago's rivers, so out at sea
+            // where the skirt is already deeper than the bed nothing changes.
+            CoveCarveAt(dx, dz, out float coveEdge, out float coveBed);
+            float coveCut = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(9f, 0f, coveEdge));
+            h = Mathf.Lerp(h, Mathf.Min(h, coveBed), coveCut);
+
             float channel = Mathf.Clamp01(Mathf.Min((x - 4f) * 1.4f, (9f - z) * 0.8f));
             return Mathf.Lerp(h, Mathf.Min(h, -3.4f), channel);
+        }
+
+        // How the cove shapes the ground at island-local (lx, lz): signed distance
+        // outside the local channel edge (negative = inside) and the local bed height.
+        // A straight run from open sea to just past the head: swimmable water most of
+        // the way (bed -3 rising to -0.9), then the last stretch climbs out onto the
+        // dry cave floor. The mouth flares like the rivers' estuaries; the head bowl
+        // widens again so the grotto floor is roomier than the channel.
+        private static void CoveCarveAt(float lx, float lz, out float edgeDist, out float bed)
+        {
+            Vector2 a = CoveDir * CoveMouthDist;                 // t = 0, out at sea
+            Vector2 b = CoveDir * (CoveHeadDist - 6f);           // t = 1, back of the cave
+            Vector2 ab = b - a;
+            var p = new Vector2(lx, lz);
+            float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / ab.sqrMagnitude);
+            float d = Vector2.Distance(p, a + ab * t);
+
+            float width = CoveHalfWidth
+                * (1f + 1.1f * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.30f, 0f, t)))   // estuary mouth
+                + 1.8f * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.80f, 1f, t));         // head bowl
+            edgeDist = d - width;
+
+            bed = Mathf.Lerp(-3.0f, -0.9f, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, 0.62f, t)));
+            bed = Mathf.Lerp(bed, CoveFloorY, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.68f, 0.88f, t)));
+        }
+
+        // The abyssal plain: one flat slab far under the waves, spanning the whole
+        // sailable map. Every island's underwater skirt runs down PAST this depth, so
+        // coasts slope into the seabed instead of ending on a floating rim — and the
+        // underwater murk keeps the sand-into-sand join soft. A cube, not a plane: the
+        // top face is the floor and the box collider comes free.
+        private const float OceanFloorDepth = 8f;    // below the waterline
+        private const float OceanFloorSpan = 2000f;  // covers every island, port and shark circuit
+
+        private static void EnsureOceanFloorOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            if (harbor == null || harbor.transform.Find("OceanFloor") != null) return;
+
+            Transform water = harbor.transform.Find("Water");
+            float waterY = water != null ? water.position.y : 0.4f;
+
+            var floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            floor.name = "OceanFloor";
+            floor.transform.SetParent(harbor.transform, false);
+            floor.transform.position = new Vector3(0f, waterY - OceanFloorDepth - 0.5f, -250f);
+            floor.transform.localScale = new Vector3(OceanFloorSpan, 1f, OceanFloorSpan);
+            var floorRenderer = floor.GetComponent<MeshRenderer>();
+            floorRenderer.sharedMaterial = GetOrCreateMaterial(
+                "Assets/Art/Materials/Sea_OceanFloor.mat", new Color(0.6f, 0.55f, 0.4f), 0.02f);
+            // A 2 km slab in the shadowmap would cost far more than the nothing it adds.
+            floorRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log($"[ShipTestAreaBuilder] Ocean floor laid at y={waterY - OceanFloorDepth:F2} " +
+                      "across the map; island skirts run down into it.");
         }
 
         // Maintenance: raise the home island behind the dock; rebuilt whenever the layout
@@ -2249,15 +2439,35 @@ namespace Game.EditorTools
             BuildStartIsland(harbor);
         }
 
+        // The loot cave is HAND-AUTHORED once built: Paul places the skull and the
+        // dressing around it by eye. A rebuild keeps the WHOLE cave — detached here
+        // before the island is destroyed, re-adopted by the new island in
+        // BuildLootCave — so the builder's cave numbers only matter the very first
+        // time. New cave features reach existing scenes via Ensure* migrations
+        // (EnsureSkullEyeFiresOnce), never via rebuild.
+        private static GameObject _preservedLootCave;
+
         // Remove the island and everything derived from it (stairs, piles, old mesh asset).
+        // The dock-era delivery pad and zone go too: the loot cave owns delivery now, and
+        // BuildStartIsland recreates the zone inside the cave.
         private static void TearDownStartIsland(GameObject harbor)
         {
-            foreach (string name in new[] { "StartIsland", "DockShoreStairs", "DockPiles" })
+            _preservedLootCave = null;
+            Transform cave = harbor.transform.Find("StartIsland/LootCave");
+            if (cave != null)
+            {
+                cave.SetParent(null, true);
+                _preservedLootCave = cave.gameObject;
+            }
+
+            foreach (string name in new[] { "StartIsland", "DockShoreStairs", "DockPiles",
+                                            "CargoDeliveryPad", "CargoDeliveryZone" })
             {
                 Transform t = harbor.transform.Find(name);
                 if (t != null) Object.DestroyImmediate(t.gameObject);
             }
             AssetDatabase.DeleteAsset(IslandMeshPath);
+            AssetDatabase.DeleteAsset("Assets/Art/Materials/Sea_CargoPad.mat");
         }
 
         [MenuItem("Tools/Ship/Rebuild Start Island")]
@@ -2297,6 +2507,7 @@ namespace Game.EditorTools
             sand.AddComponent<MeshCollider>().sharedMesh = mesh; // static: non-convex is fine
 
             PlaceIslandFlora(root);
+            BuildLootCave(root);
             if (harbor.transform.Find("DockShoreStairs") == null)
                 BuildDockShoreStairs(harbor);
             if (harbor.transform.Find("DockPiles") == null)
@@ -2306,7 +2517,7 @@ namespace Game.EditorTools
             EditorSceneManager.SaveScene(scene);
             AssetDatabase.SaveAssets();
             Debug.Log("[ShipTestAreaBuilder] Start island raised behind the dock: sand mesh + " +
-                      "collider, beach ramp over the dock's north end, palms and dressing.");
+                      "collider, beach ramp, palms — and the skull-rock loot cave on the west cove.");
         }
 
         // Radial sand mound: rings out to the coastline-plus-skirt, heights from the shared
@@ -2314,7 +2525,9 @@ namespace Game.EditorTools
         // mirrors it, so the winding is reversed to keep normals up.
         private static Mesh BuildIslandMesh()
         {
-            const int Rings = 40, Sectors = 112;
+            // Sized so ring spacing stays ~1.1 m on the grown island: the cove channel
+            // (11 m across at its narrowest) needs several rings to read as a channel.
+            const int Rings = 56, Sectors = 160;
             var verts = new Vector3[1 + Rings * Sectors];
             verts[0] = new Vector3(0f, IslandHeightWorld(0f, IslandCenterZ), 0f);
             for (int k = 1; k <= Rings; k++)
@@ -2401,28 +2614,34 @@ namespace Game.EditorTools
 
             // Rows of posts along both long edges of the slab, jetty-style: tucked under
             // the deck, running to below the waterline (or into the beach where the island
-            // has risen to meet them).
-            float postTop = DockTopY - 0.5f;
+            // has risen to meet them). The Synty kit dock carries its own piles, so these
+            // only back the legacy primitive slab.
             float postBottom = waterY - 1.5f;
-            foreach (float z in new[] { -7.8f, -3.9f, 0f, 3.9f, 7.8f })
-                foreach (float x in new[] { -3.65f, 3.65f })
-                    AddDockPost(root, wood, x, DockCenterZ + z, postTop, postBottom);
-
-            // Stair supports: pairs whose tops follow the flight down. Geometry comes from
-            // the built stairs so they track however many steps the beach needed.
-            Transform stairs = harbor.transform.Find("DockShoreStairs");
-            int count = stairs != null ? stairs.childCount : 0;
-            const float rise = 0.25f, run = 0.45f;
-            float zEdge = DockCenterZ + 8.45f;
-            foreach (int i in new[] { count / 3, (2 * count) / 3 })
+            bool kitDock = harbor.transform.Find($"Dock/{DockKitTag}") != null;
+            if (!kitDock)
             {
-                if (i < 1 || i > count) continue;
-                float top = DockTopY - rise * i - 0.35f; // tucked under the tread
-                float z = zEdge + (i - 0.5f) * run;
-                AddDockPost(root, wood, -2.2f, z, top, postBottom);
-                AddDockPost(root, wood, 2.2f, z, top, postBottom);
+                float postTop = DockTopY - 0.5f;
+                foreach (float z in new[] { -7.8f, -3.9f, 0f, 3.9f, 7.8f })
+                    foreach (float x in new[] { -3.65f, 3.65f })
+                        AddDockPost(root, wood, x, DockCenterZ + z, postTop, postBottom);
+
+                // Stair supports for the legacy primitive steps; the kit stair cascade
+                // builds its own joint posts.
+                Transform stairs = harbor.transform.Find("DockShoreStairs");
+                int count = stairs != null ? stairs.childCount : 0;
+                const float rise = 0.25f, run = 0.45f;
+                float zEdge = DockCenterZ + 8.45f;
+                foreach (int i in new[] { count / 3, (2 * count) / 3 })
+                {
+                    if (i < 1 || i > count) continue;
+                    float top = DockTopY - rise * i - 0.35f; // tucked under the tread
+                    float z = zEdge + (i - 0.5f) * run;
+                    AddDockPost(root, wood, -2.2f, z, top, postBottom);
+                    AddDockPost(root, wood, 2.2f, z, top, postBottom);
+                }
             }
-            Debug.Log("[ShipTestAreaBuilder] Dock piles added under the slab and the shore stairs.");
+            Debug.Log("[ShipTestAreaBuilder] Dock piles pass done " +
+                      (kitDock ? "(kit dock carries its own piles)." : "(slab + stair posts)."));
         }
 
         private static void AddDockPost(GameObject root, Material wood,
@@ -2436,43 +2655,66 @@ namespace Game.EditorTools
             post.GetComponent<MeshRenderer>().sharedMaterial = wood;
         }
 
-        /// <summary>Wooden stair flight from the dock's landward (north) edge down onto the
-        /// island beach. Step count and landing derive from the island's analytic sand
-        /// height, iterated so the bottom tread always sits within a step of the sand —
-        /// whatever the waterline (and so the island) ended up at.</summary>
+        /// <summary>Shore stairs from the Synty dock kit: a CASCADE of SM_Bld_Dock_Stairs_01
+        /// flights (each 4 m wide, 1.4 m drop over a 2.8 m run — measured from the mesh)
+        /// descending north from the dock's landward face onto the beach. The deck rides
+        /// ~4.7 m over the waterline, so one flight is nowhere near enough — flights are
+        /// stacked top-flush at DockTopY until the treads dip under the analytic sand
+        /// (the bottom flight buries into the rising beach, like the old adaptive steps).
+        /// Joints between flights get support posts down into the sand.</summary>
+        private const float DockStairsDrop = 1.4f;
+        private const float DockStairsRun = 2.8f;
+
         private static void BuildDockShoreStairs(GameObject harbor)
         {
             Transform water = harbor.transform.Find("Water");
             float waterY = water != null ? water.position.y : 0f;
-            Material wood = GetOrCreateMaterial(WoodMatPath, new Color(0.42f, 0.29f, 0.17f), 0.1f);
-
-            const float rise = 0.25f, run = 0.45f, width = 5f;
-            float zEdge = DockCenterZ + 8.45f; // dock's north face
-
-            // The landing's sand height depends on how far the stairs reach; a few
-            // fixed-point rounds settle both together.
-            int count = 8;
-            for (int i = 0; i < 4; i++)
-            {
-                float sand = waterY + IslandHeightWorld(0f, zEdge + count * run);
-                count = Mathf.Max(1, Mathf.CeilToInt((DockTopY - 0.05f - sand) / rise));
-            }
 
             var root = new GameObject("DockShoreStairs");
             root.transform.SetParent(harbor.transform, false);
-            for (int i = 1; i <= count; i++)
+
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                $"{SyntyRoot}/Buildings/SM_Bld_Dock_Stairs_01.prefab");
+            if (prefab == null)
             {
-                var step = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                step.name = $"Step{i}";
-                step.transform.SetParent(root.transform, false);
-                float top = DockTopY - rise * i;
-                step.transform.localPosition = new Vector3(
-                    0f, top - (rise + 0.05f) * 0.5f, zEdge + (i - 0.5f) * run);
-                step.transform.localScale = new Vector3(width, rise + 0.05f, run + 0.06f);
-                step.GetComponent<MeshRenderer>().sharedMaterial = wood;
+                Debug.LogWarning("[ShipTestAreaBuilder] SM_Bld_Dock_Stairs_01 missing; no shore stairs built.");
+                return;
             }
-            Debug.Log($"[ShipTestAreaBuilder] Dock shore stairs: {count} steps down to the " +
-                      "island beach from the dock's north edge.");
+
+            // Walk the cascade down until a flight's bottom lands under the beach.
+            int flights = 1;
+            while (flights < 6)
+            {
+                float landingZ = DockCenterZ + 8.45f + flights * DockStairsRun;
+                float sand = waterY + IslandHeightWorld(0f, landingZ);
+                if (DockTopY - flights * DockStairsDrop <= sand + 0.3f) break;
+                flights++;
+            }
+
+            for (int i = 0; i < flights; i++)
+            {
+                var flight = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                flight.transform.SetParent(root.transform, false);
+                // Each flight ascends toward its local +z; yaw 180 turns the top step
+                // south so the run descends away from the dock.
+                flight.transform.localPosition = new Vector3(
+                    0f, DockTopY - (i + 1) * DockStairsDrop,
+                    DockCenterZ + 8.45f + (i + 0.5f) * DockStairsRun);
+                flight.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+
+                // The joint where this flight hangs off the previous one gets a pair of
+                // kit poles down into the sand — mid-cascade treads float over the beach.
+                if (i > 0)
+                {
+                    float top = DockTopY - i * DockStairsDrop - 0.1f;
+                    float z = DockCenterZ + 8.45f + i * DockStairsRun;
+                    foreach (float x in new[] { -1.6f, 1.6f })
+                        if (waterY + IslandHeightWorld(x, z) < top)
+                            AddKitPole(root.transform, "StairPost", x, top, z);
+                }
+            }
+            Debug.Log($"[ShipTestAreaBuilder] Dock shore stairs: {flights} Synty kit flights " +
+                      "down to the island beach.");
         }
 
         // Deterministic dressing: (prefab, degrees from north, metres inland of the coast,
@@ -2486,10 +2728,12 @@ namespace Game.EditorTools
                 ("SM_Env_PalmTree_01",       30f,  7f,  40f),
                 ("SM_Env_PalmTree_03",       75f,  9f, 160f),
                 ("SM_Env_PalmTree_Tall_01", 118f,  8f, 300f),
-                ("SM_Env_PalmTree_02",      252f,  7f,  10f),
-                ("SM_Env_PalmTree_Tall_02", 300f,  9f, 220f),
+                // The west coast (bearings ~244-284) belongs to the loot cove — flora
+                // that used to live there now keeps clear of the channel and the grotto.
+                ("SM_Env_PalmTree_02",      224f,  7f,  10f),
+                ("SM_Env_PalmTree_Tall_02", 326f,  9f, 220f),
                 ("SM_Env_PalmBush_03",       60f, 11f,   0f),
-                ("SM_Env_Bush_01",          272f, 12f,  90f),
+                ("SM_Env_Bush_01",          210f, 12f,  90f),
                 ("SM_Env_GrassPatch_01",     20f, 18f,   0f),
                 ("SM_Env_GrassPatch_02",    100f, 20f,  70f),
                 ("SM_Env_GrassPatch_03",    205f, 19f, 140f),
@@ -2497,7 +2741,10 @@ namespace Game.EditorTools
                 ("SM_Env_Rocks_01",          92f,  3f,   0f),
                 ("SM_Env_Rocks_02",         228f,  2f,  45f),
                 ("SM_Env_Beach_Pile_01",    140f,  4f,   0f),
-                ("SM_Env_Rock_Skull_01",      0f, 15f, 195f),
+                // The skull rock is no longer dressing — it IS the loot cave at the
+                // cove head (BuildLootCave). The dead tree silhouettes on the headland
+                // shoulder above it.
+                ("SM_Env_Tree_Dead_01",     305f, 10f,  80f),
             };
 
             var parent = new GameObject("Flora");
@@ -2520,6 +2767,351 @@ namespace Game.EditorTools
                     x, IslandHeightWorld(x, IslandCenterZ + z) - 0.12f, z);
                 go.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
             }
+        }
+
+        // ---------------------------------------------------------------- loot cave
+
+        // The pirates' stash at the cove head — INSIDE the skull rock. The terrain digs
+        // the hollow (headland shoulders + cove carve in IslandHeightWorld); the skull
+        // sits over it as the cave shell. SM_Env_Rock_Skull_01 was probed from its FBX:
+        // a hollow shell 20 m wide x 13.5 m tall x 19 m deep (raw units = metres at
+        // import), open underneath (terrain becomes the floor), solid cranium on local
+        // -Z, and a face on local +Z with a walk-in mouth (~2.8 m wide gap between the
+        // teeth, open from the base to ~y+2.2) plus two through eye sockets around
+        // y 3-4.8 — the cave light glows out of them after dark. Cargo delivery lives
+        // inside: the CargoDelivery zone that used to be the dock's gold pad floats
+        // over a treasure hoard on the skull's floor. All child positions are
+        // island-root local (y = metres above the waterline), same frame as the flora.
+        private const float SkullScale = 1.15f;   // mouth gap ~3.2 m wide, ~4 m headroom
+        // Skull pivot height: raw y0 sits +0.7 above the waterline, putting the mouth
+        // gap's base (raw -1.7 scaled) right at the channel bed (~-1 m) outside — wade
+        // in through the teeth, walk up onto the dry hoard floor. The shell's lowest
+        // skirts (raw -3.7) bury ~2.5 m into the sand.
+        private const float SkullPivotY = 0.7f;
+
+        private static void BuildLootCave(GameObject islandRoot)
+        {
+            // A cave that already existed rides through the rebuild exactly as Paul
+            // arranged it — world pose kept, nothing rebuilt.
+            if (_preservedLootCave != null)
+            {
+                _preservedLootCave.transform.SetParent(islandRoot.transform, true);
+                _preservedLootCave = null;
+                Debug.Log("[ShipTestAreaBuilder] Loot cave: hand-authored cave re-adopted " +
+                          "through the island rebuild.");
+                return;
+            }
+
+            var cave = new GameObject("LootCave");
+            cave.transform.SetParent(islandRoot.transform, false);
+
+            Vector2 head = CoveHead, dir = CoveDir, perp = CovePerp;
+            float Ground(Vector2 p) => IslandHeightWorld(p.x, IslandCenterZ + p.y);
+
+            // The skull: centred a step inland of the head so its interior spans the
+            // whole dry floor, mouth (+Z) yawed seaward straight down the channel —
+            // model +Z under yaw θ maps to Bearing(θ). Its sides and cranium land on
+            // the headland shoulders and bury there.
+            Vector2 skullXZ = head - dir * 1f;
+            GameObject skull = InstantiateCavePiece(cave.transform, "Environments/SM_Env_Rock_Skull_01",
+                skullXZ, CoveBearingDeg, SkullPivotY);
+            if (skull != null)
+            {
+                skull.transform.localScale = Vector3.one * SkullScale;
+                AddMeshColliders(skull);
+                AddSkullEyeFires(skull);
+            }
+
+            // The hoard. Piles and chests crowd the back half of the skull floor; the
+            // skeleton slumped by the wall did not make it off the ship.
+            float floorY = CoveFloorY - 0.05f;
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_TreasurePile_02", head - dir * 3f + perp * 1.2f, 15f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_TreasurePile_04", head - dir * 4f - perp * 1.8f, 250f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_TreasurePile_01", head - perp * 2.8f + dir * 0.5f, 130f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_Chest_02", head - dir * 4.5f + perp * 0.6f, 262f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_Chest_01", head - dir * 3.8f + perp * 2.6f, 285f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_Skeleton_Chest_01", head - dir * 2f - perp * 3.2f, 330f, floorY);
+            PlaceCaveProp(cave.transform, "Items/SM_Item_Coins_03", head - dir * 2.8f, 0f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_Barrel_01", head + perp * 3.4f - dir * 0.5f, 40f, floorY);
+            PlaceCaveProp(cave.transform, "Props/SM_Prop_Crate_02", head + perp * 3.9f + dir * 1.1f, 75f, floorY);
+
+            // Torches on the channel banks announce the mouth from the water (the
+            // banks are the first dry ground, ~10 m off-axis); a second pair inside
+            // flanks the hoard on the dry floor.
+            Vector2 mouthXZ = skullXZ + dir * (9.6f * SkullScale);
+            WireNightTorch(PlaceCaveProp(cave.transform, "Props/SM_Prop_BottleTorch_01",
+                mouthXZ + perp * 10f, 190f, Ground(mouthXZ + perp * 10f) - 0.05f));
+            WireNightTorch(PlaceCaveProp(cave.transform, "Props/SM_Prop_BottleTorch_01",
+                mouthXZ - perp * 10f, 350f, Ground(mouthXZ - perp * 10f) - 0.05f));
+            WireNightTorch(PlaceCaveProp(cave.transform, "Props/SM_Prop_BottleTorch_01",
+                head - dir * 4f + perp * 3f, 220f, floorY));
+            WireNightTorch(PlaceCaveProp(cave.transform, "Props/SM_Prop_BottleTorch_01",
+                head - dir * 4f - perp * 3f, 140f, floorY));
+
+            // A warm point light at the skull's heart: keeps the hoard readable under
+            // the shell at any hour, and spills out of the mouth and eye sockets after
+            // dark — the island's come-look-here beacon.
+            var lightGo = new GameObject("CaveLight");
+            lightGo.transform.SetParent(cave.transform, false);
+            lightGo.transform.localPosition = new Vector3(
+                skullXZ.x, CoveFloorY + 3.2f, skullXZ.y);
+            var lamp = lightGo.AddComponent<Light>();
+            lamp.type = LightType.Point;
+            lamp.color = new Color(1f, 0.72f, 0.42f);
+            lamp.intensity = 3.2f;
+            lamp.range = 18f;
+            lamp.shadows = LightShadows.None;
+
+            // The delivery trigger, same component and semantics as the old dock pad:
+            // loose, at-rest loot inside converts to gold via CargoManager.
+            Vector2 zoneXZ = head - dir * 2.5f;
+            var zone = new GameObject("CargoDeliveryZone");
+            zone.transform.SetParent(cave.transform, false);
+            zone.transform.localPosition = new Vector3(zoneXZ.x, CoveFloorY + 0.9f, zoneXZ.y);
+            var zb = zone.AddComponent<BoxCollider>();
+            zb.isTrigger = true;
+            zb.size = new Vector3(5f, 1.8f, 5f);
+            zone.AddComponent<CargoDelivery>();
+            zone.AddComponent<DeliveryFxView>();
+        }
+
+        private static GameObject InstantiateCavePiece(Transform parent, string path,
+            Vector2 localXZ, float yaw, float y)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>($"{SyntyRoot}/{path}.prefab");
+            if (prefab == null)
+            {
+                Debug.LogWarning($"[ShipTestAreaBuilder] Loot cave piece missing: {path}");
+                return null;
+            }
+            var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = new Vector3(localXZ.x, y, localXZ.y);
+            go.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+            return go;
+        }
+
+        // Fire in the skull's eye sockets. Parented to the skull itself in RAW model
+        // space (children inherit its transform), so the fires stay seated in the
+        // sockets however the skull is moved, rotated or rescaled by hand in the
+        // editor. Socket geometry from the fine FBX probe: the sockets are concave
+        // dents either side of the nose pillar, x +-1.0..2.5, y 6.3..8.0, recessed
+        // ~2 m behind a protruding lower lid — each fire sits in the pocket just
+        // above its sill. Each socket gets a campfire, the pack's own FX_Fire_01
+        // particle flames, and a warm point light for the glowing stare.
+        private static readonly Vector3 EyeSeatL = new Vector3(-1.7f, 6.75f, 2.4f);
+        private static readonly Vector3 EyeSeatR = new Vector3(1.7f, 6.55f, 2.4f);
+
+        private static void AddSkullEyeFires(GameObject skull)
+        {
+            foreach ((string name, Vector3 seat) in new[] { ("EyeFire_L", EyeSeatL), ("EyeFire_R", EyeSeatR) })
+            {
+                var eye = new GameObject(name);
+                eye.transform.SetParent(skull.transform, false);
+                eye.transform.localPosition = seat;
+
+                var firePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                    SyntyRoot + "/Props/SM_Prop_Campfire_01.prefab");
+                if (firePrefab != null)
+                {
+                    var fire = (GameObject)PrefabUtility.InstantiatePrefab(firePrefab);
+                    fire.transform.SetParent(eye.transform, false);
+                }
+
+                GameObject fx = AddEyeFlame(eye.transform);
+
+                var lightGo = new GameObject("EyeLight");
+                lightGo.transform.SetParent(eye.transform, false);
+                lightGo.transform.localPosition = new Vector3(0f, 0.55f, 0f);
+                var lamp = lightGo.AddComponent<Light>();
+                lamp.type = LightType.Point;
+                lamp.color = new Color(1f, 0.62f, 0.3f);
+                lamp.intensity = 2.6f;
+                lamp.range = 12f;
+                lamp.shadows = LightShadows.None;
+
+                WireNightControl(eye.gameObject, lamp, fx);
+            }
+        }
+
+        // The pack's stylized fire particles, seated on the campfire logs.
+        private static GameObject AddEyeFlame(Transform eye)
+        {
+            var fxPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                SyntyRoot + "/FX/FX_Fire_01.prefab");
+            if (fxPrefab == null)
+            {
+                Debug.LogWarning("[ShipTestAreaBuilder] FX_Fire_01 prefab missing; skull eye keeps bare logs.");
+                return null;
+            }
+            var fx = (GameObject)PrefabUtility.InstantiatePrefab(fxPrefab);
+            fx.name = "EyeFlame";
+            fx.transform.SetParent(eye, false);
+            fx.transform.localPosition = new Vector3(0f, 0.15f, 0f);
+            return fx;
+        }
+
+        // Night-only flame control: dark all day (even in a shaded socket — that is
+        // what Night mode is for), burning after dusk on the synced day/night clock.
+        private static void WireNightControl(GameObject host, Light lamp, GameObject flameFx)
+        {
+            if (host.GetComponent<DockLantern>() != null) return;
+            var control = host.AddComponent<DockLantern>();
+            control.SetMode(DockLantern.LanternMode.Night);
+            control.SetRefs(lamp, flameFx != null
+                ? flameFx.GetComponentInChildren<ParticleSystemRenderer>() : null);
+        }
+
+        // A cave torch burns only at night: the bare bottle prop gets the pack's fire
+        // FX at its tip, a small warm light, and the Night control.
+        private static void WireNightTorch(GameObject torch)
+        {
+            if (torch == null || torch.GetComponent<DockLantern>() != null) return;
+
+            Bounds b = RendererBounds(torch);
+            Vector3 tip = torch.transform.InverseTransformPoint(
+                new Vector3(b.center.x, b.max.y, b.center.z));
+
+            GameObject fx = null;
+            var fxPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                SyntyRoot + "/FX/FX_Fire_01.prefab");
+            if (fxPrefab != null)
+            {
+                fx = (GameObject)PrefabUtility.InstantiatePrefab(fxPrefab);
+                fx.name = "TorchFlame";
+                fx.transform.SetParent(torch.transform, false);
+                fx.transform.localPosition = tip + Vector3.down * 0.08f;
+                fx.transform.localScale = Vector3.one * 0.45f; // campfire-sized FX, torch-sized flame
+            }
+
+            var lightGo = new GameObject("TorchLight");
+            lightGo.transform.SetParent(torch.transform, false);
+            lightGo.transform.localPosition = tip + Vector3.up * 0.25f;
+            var lamp = lightGo.AddComponent<Light>();
+            lamp.type = LightType.Point;
+            lamp.color = new Color(1f, 0.62f, 0.3f);
+            lamp.intensity = 2f;
+            lamp.range = 9f;
+            lamp.shadows = LightShadows.None;
+
+            WireNightControl(torch, lamp, fx);
+        }
+
+        // Maintenance: light the eye fires on the scene's existing cave skull without a
+        // full island rebuild. The skull may be hand-placed — find it where it is and
+        // never touch its transform here.
+        private static void EnsureSkullEyeFiresOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform cave = harbor != null ? harbor.transform.Find("StartIsland/LootCave") : null;
+            Transform skull = cave != null ? cave.Find("SM_Env_Rock_Skull_01") : null;
+            if (skull == null) return;
+
+            Scene scene = SceneManager.GetActiveScene();
+            if (skull.Find("EyeFire_L") == null)
+            {
+                AddSkullEyeFires(skull.gameObject);
+                EditorSceneManager.MarkSceneDirty(scene);
+                EditorSceneManager.SaveScene(scene);
+                Debug.Log("[ShipTestAreaBuilder] Skull eye fires lit: campfire + light + ember glow " +
+                          "seated in both sockets, riding the skull's transform.");
+                return;
+            }
+
+            // Migrations, cheapest first. (1) Fires still sitting exactly on the
+            // misread cheek shelves move into the real sockets; anything hand-moved
+            // is left alone. (2) The placeholder emissive ember spheres are replaced
+            // by the pack's FX_Fire_01 particle flames. (3) Eyes and cave torches get
+            // the Night control: dark by day, burning after dusk.
+            bool changed = false;
+            foreach ((string name, Vector3 old, Vector3 seat) in new[]
+            {
+                ("EyeFire_L", new Vector3(-5.3f, 3.3f, 4.2f), EyeSeatL),
+                ("EyeFire_R", new Vector3(5.0f, 3.3f, 4.2f), EyeSeatR),
+            })
+            {
+                Transform eye = skull.Find(name);
+                if (eye == null) continue;
+                if ((eye.localPosition - old).sqrMagnitude <= 0.01f)
+                {
+                    eye.localPosition = seat;
+                    changed = true;
+                }
+                Transform glow = eye.Find("EyeGlow");
+                if (glow != null)
+                {
+                    Object.DestroyImmediate(glow.gameObject);
+                    changed = true;
+                }
+                Transform flame = eye.Find("EyeFlame");
+                if (flame == null)
+                {
+                    flame = AddEyeFlame(eye)?.transform;
+                    changed = true;
+                }
+                if (eye.GetComponent<DockLantern>() == null)
+                {
+                    Transform lightT = eye.Find("EyeLight");
+                    WireNightControl(eye.gameObject,
+                        lightT != null ? lightT.GetComponent<Light>() : null,
+                        flame != null ? flame.gameObject : null);
+                    changed = true;
+                }
+            }
+
+            foreach (Transform child in cave)
+                if (child.name.StartsWith("SM_Prop_BottleTorch")
+                    && child.GetComponent<DockLantern>() == null)
+                {
+                    WireNightTorch(child.gameObject);
+                    changed = true;
+                }
+
+            if (!changed) return;
+            AssetDatabase.DeleteAsset("Assets/Art/Materials/Sea_SkullEyeGlow.mat");
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Skull eye fires + cave torches updated: FX flames " +
+                      "seated, Night controls wired (dark by day, lit after dusk).");
+        }
+
+        // Maintenance: the delivery payoff rig on the existing scene's cave. The zone
+        // lives inside the hand-authored LootCave, so this attaches IN PLACE — cave
+        // features never ship via island rebuild.
+        private static void EnsureDeliveryFxOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform cave = harbor != null ? harbor.transform.Find("StartIsland/LootCave") : null;
+            var zone = cave != null ? cave.GetComponentInChildren<CargoDelivery>(true) : null;
+            if (zone == null || zone.GetComponent<DeliveryFxView>() != null) return;
+
+            zone.gameObject.AddComponent<DeliveryFxView>();
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Delivery payoff rigged: coin chime, eye-flame " +
+                      "burst and hoard growth on the cave's delivery zone.");
+        }
+
+        // Static concave mesh colliders on every filter: fine for scenery the player
+        // walks on and loot rests against.
+        private static void AddMeshColliders(GameObject go)
+        {
+            foreach (MeshFilter mf in go.GetComponentsInChildren<MeshFilter>())
+                if (mf.GetComponent<MeshCollider>() == null)
+                    mf.gameObject.AddComponent<MeshCollider>();
+        }
+
+        // Dressing: a Synty prop on the cave floor (path relative to the Synty prefab
+        // root), with mesh colliders so players and thrown loot rest against it.
+        private static GameObject PlaceCaveProp(Transform parent, string path, Vector2 localXZ,
+            float yaw, float y)
+        {
+            GameObject go = InstantiateCavePiece(parent, path, localXZ, yaw, y);
+            if (go != null) AddMeshColliders(go);
+            return go;
         }
 
         // Maintenance: hang the day/night cycle on the scene's sun once.
@@ -2660,7 +3252,9 @@ namespace Game.EditorTools
             public float dockBearingDeg;
 
             // Submerged sand ring outside the coast; grows with the island.
-            public float Skirt => Mathf.Max(14f, radius * 0.08f);
+            // Wide enough that the underwater slope reaches below the ocean floor
+            // (see IslandSkirt) — island coasts run down INTO the seabed everywhere.
+            public float Skirt => Mathf.Max(28f, radius * 0.08f);
 
             // Coast noise scales with the island: a 260 m island gets ~30 m bays and
             // headlands, so circumnavigating it is a coastline, not a circle.
@@ -2845,7 +3439,7 @@ namespace Game.EditorTools
 
         // Bump to rebuild every scene's archipelago on the next maintenance pass (layout
         // redesigns, generator changes). Island mesh assets are wiped and regenerated.
-        private const int ArchipelagoVersion = 9; // v7: loot; v8: island ports; v9: real shipwreck prop
+        private const int ArchipelagoVersion = 10; // v8: island ports; v9: real shipwreck prop; v10: skirts reach the ocean floor
 
         private const string IslandMatPath = "Assets/Art/Materials/Island_Terrain.mat";
 
@@ -3115,7 +3709,7 @@ namespace Game.EditorTools
 
             float tipZ = 1.8f + (kit.Length - 1) * DockPieceLength;
             AddBollard(root, wood, mooring, new Vector3(1.1f, DockTopY + 0.3f, tipZ + 0.9f));
-            AddLantern(root, wood, new Vector3(-1.3f, 0f, tipZ + 0.9f), 0f, onDeck: true);
+            AddLantern(root, new Vector3(-1.3f, 0f, tipZ + 0.9f), 0f, onDeck: true);
         }
 
         private static void PlaceVignettes(IslandSpec spec, GameObject island)
@@ -3233,6 +3827,8 @@ namespace Game.EditorTools
             var soCargo = new SerializedObject(cargo);
             soCargo.FindProperty("value").intValue = value;
             soCargo.ApplyModifiedPropertiesWithoutUndo();
+
+            go.AddComponent<WaterRippleEmitter>().ConfigureFloater();
             return go;
         }
 
@@ -3328,9 +3924,10 @@ namespace Game.EditorTools
         private const string SharkPrefabPath = SyntyRoot + "/Characters/SM_Shark_01.prefab";
         private const int SharksVersion = 3; // bump when circuits/counts change
 
-        // Dock-side cargo infrastructure: the delivery ledger, the payout pad on the
-        // dock's shore end, and a few starter crates so the stow/deliver loop is
-        // testable without a voyage. One-shot; scene-baked NetworkIdentities.
+        // Cargo infrastructure: the delivery ledger and a few starter crates so the
+        // stow/deliver loop is testable without a voyage. One-shot; scene-baked
+        // NetworkIdentities. The delivery zone itself lives in the start island's loot
+        // cave (BuildLootCave) — it is rebuilt with the island, not here.
         private static void EnsureCargoOnce()
         {
             if (SceneManager.GetActiveScene().path != ScenePath) return;
@@ -3347,24 +3944,6 @@ namespace Game.EditorTools
             mgr.AddComponent<Mirror.NetworkIdentity>();
             mgr.AddComponent<CargoManager>();
 
-            Material padMat = GetOrCreateMaterial(
-                "Assets/Art/Materials/Sea_CargoPad.mat", new Color(0.72f, 0.58f, 0.22f), 0.3f);
-            var pad = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            pad.name = "CargoDeliveryPad";
-            pad.transform.SetParent(harbor.transform, false);
-            pad.transform.position = new Vector3(2.2f, DockTopY + 0.03f, DockCenterZ + 5.5f);
-            pad.transform.localScale = new Vector3(3.2f, 0.06f, 3.2f);
-            Object.DestroyImmediate(pad.GetComponent<Collider>());
-            pad.GetComponent<MeshRenderer>().sharedMaterial = padMat;
-
-            var zone = new GameObject("CargoDeliveryZone");
-            zone.transform.SetParent(harbor.transform, false);
-            zone.transform.position = pad.transform.position + Vector3.up * 0.75f;
-            var zb = zone.AddComponent<BoxCollider>();
-            zb.isTrigger = true;
-            zb.size = new Vector3(3.2f, 1.5f, 3.2f);
-            zone.AddComponent<CargoDelivery>();
-
             var starter = new GameObject("StarterLoot");
             starter.transform.SetParent(harbor.transform, false);
             PlaceStarterLoot("Props/SM_Prop_Crate_01", 10, 6f, starter.transform, new Vector3(-2.6f, DockTopY + 0.6f, DockCenterZ + 6.2f));
@@ -3374,7 +3953,8 @@ namespace Game.EditorTools
             Scene scene = SceneManager.GetActiveScene();
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
-            Debug.Log("[ShipTestAreaBuilder] Cargo infrastructure placed: ledger, delivery pad, starter loot.");
+            Debug.Log("[ShipTestAreaBuilder] Cargo infrastructure placed: ledger and starter loot " +
+                      "(delivery zone lives in the island's loot cave).");
         }
 
         private static void PlaceStarterLoot(string path, int value, float mass, Transform parent, Vector3 worldPos)
@@ -3482,6 +4062,7 @@ namespace Game.EditorTools
                     shark.AddComponent<Mirror.NetworkIdentity>();
                     var view = shark.AddComponent<SharkView>();
                     shark.AddComponent<Mirror.NetworkTransformReliable>();
+                    shark.AddComponent<WaterRippleEmitter>().ConfigureShark();
                     var so = new SerializedObject(view);
                     so.FindProperty("center").vector2Value = c;
                     so.FindProperty("radius").floatValue = r * (1f - 0.18f * i); // ring-in cohabitants
@@ -3777,7 +4358,7 @@ namespace Game.EditorTools
             var homeMooring = home.AddComponent<DockMooring>();
             AddBerthZone(home, HomeBerthCenter, HomeBerthSize);
             AddBollard(home, wood, homeMooring, new Vector3(-0.4f, DockTopY + 0.3f, 0f));
-            AddLantern(home, wood, new Vector3(-3.2f, 0f, -2.5f), waterY, onDeck: true);
+            AddLantern(home, new Vector3(-3.2f, 0f, -2.5f), waterY, onDeck: true);
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
@@ -3824,7 +4405,7 @@ namespace Game.EditorTools
             }
 
             AddBollard(root, wood, mooring, new Vector3(0f, DockTopY + 0.3f, -5.8f));
-            AddLantern(root, wood, new Vector3(1.1f, 0f, 6.2f), waterY, onDeck: true);
+            AddLantern(root, new Vector3(1.1f, 0f, 6.2f), waterY, onDeck: true);
         }
 
         // Berth volumes: a trigger box on the mooring root that detects the hull alongside.
@@ -3865,18 +4446,28 @@ namespace Game.EditorTools
 
         // Lantern post + Synty lantern + warm point light + emissive "flame", driven by a
         // DockLantern in Auto mode (lit only where the map is dark).
-        private static void AddLantern(GameObject root, Material wood, Vector3 localBase,
+        // A dock signal lantern, all Synty: a tent-pole mast with the lantern prop at
+        // its top — taller than the old primitive post, so the light reads across water
+        // after dark (the landmark rule). Point light + glow + DockLantern auto-switch
+        // ride along unchanged.
+        private const string LanternPolePath = SyntyRoot + "/Buildings/SM_Bld_Tent_Pole_01.prefab";
+        private const float LanternPoleTopY = 3.3f; // measured from the mesh
+
+        private static void AddLantern(GameObject root, Vector3 localBase,
             float waterY, bool onDeck)
         {
             float baseY = onDeck ? DockTopY : waterY;
-            var post = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            post.name = "LanternPost";
-            post.transform.SetParent(root.transform, false);
-            post.transform.localPosition = localBase + new Vector3(0f, baseY + 0.95f, 0f);
-            post.transform.localScale = new Vector3(0.22f, 1.9f, 0.22f);
-            post.GetComponent<MeshRenderer>().sharedMaterial = wood;
+            var polePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(LanternPolePath);
+            if (polePrefab != null)
+            {
+                var pole = (GameObject)PrefabUtility.InstantiatePrefab(polePrefab);
+                pole.name = "LanternPost";
+                pole.transform.SetParent(root.transform, false);
+                pole.transform.localPosition = localBase + new Vector3(0f, baseY, 0f);
+            }
 
-            Vector3 lampPos = localBase + new Vector3(0f, baseY + 1.95f, 0f);
+            // The pole's tip leans ~0.1 west of its pivot; seat the lantern on the tip.
+            Vector3 lampPos = localBase + new Vector3(-0.1f, baseY + LanternPoleTopY, 0f);
             var lanternPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(LanternPrefabPath);
             if (lanternPrefab != null)
             {
