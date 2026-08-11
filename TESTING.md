@@ -37,8 +37,9 @@ One-time setup for pushing:
    *Downloadable*, visibility **Restricted** (gives you a secret URL to share
    with testers; they need no itch account).
 2. Install [butler](https://itch.io/docs/butler/) and run `butler login`.
-3. Put your `username/game-slug` into `ItchTarget` in
-   `Assets/Editor/TestBuildPipeline.cs`.
+3. Fill in *Itch Target* (`username/game-slug`) on the
+   `Assets/Editor/TestBuildConfig.asset` — the push menu creates and selects
+   the asset for you the first time you run it.
 
 CI note: `Game.EditorTools.TestBuildPipeline.BuildAllBatch` is the
 `-executeMethod` entry point if this ever moves to GitHub Actions.

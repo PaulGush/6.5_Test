@@ -25,10 +25,24 @@ namespace Game.EditorTools
     public static class TestBuildPipeline
     {
         private const string ProductDirName = "PiecesOfFreight";
+        private const string ConfigPath = "Assets/Editor/TestBuildConfig.asset";
 
-        // Your itch.io target, "username/game-slug" (create the project page on
-        // itch.io first, visibility Restricted). Empty = the push menu explains setup.
-        private const string ItchTarget = "";
+        // Publish settings live in an asset (TestBuildConfig), auto-created here so
+        // "fill in the Inspector" is the whole setup story.
+        private static TestBuildConfig Config
+        {
+            get
+            {
+                var cfg = AssetDatabase.LoadAssetAtPath<TestBuildConfig>(ConfigPath);
+                if (cfg == null)
+                {
+                    cfg = ScriptableObject.CreateInstance<TestBuildConfig>();
+                    AssetDatabase.CreateAsset(cfg, ConfigPath);
+                    AssetDatabase.SaveAssets();
+                }
+                return cfg;
+            }
+        }
 
         [MenuItem("Tools/Ship/Build Test Builds (Win + Linux)")]
         public static void BuildAllMenu()
@@ -40,37 +54,72 @@ namespace Game.EditorTools
                 EditorUtility.DisplayDialog("Test builds", failure, "OK");
         }
 
+        // The config is an asset instance, not the script — this creates it on first
+        // use and selects it, so the Itch Target field is right there to fill in.
+        [MenuItem("Tools/Ship/itch Publish Settings")]
+        public static void SelectConfigMenu()
+        {
+            TestBuildConfig cfg = Config;
+            Selection.activeObject = cfg;
+            EditorGUIUtility.PingObject(cfg);
+        }
+
         [MenuItem("Tools/Ship/Build + Push To itch.io")]
         public static void BuildAndPushMenu()
         {
-            if (ItchTarget.Length == 0)
+            TestBuildConfig cfg = Config;
+            if (string.IsNullOrWhiteSpace(cfg.itchTarget))
             {
+                Selection.activeObject = cfg;
+                EditorGUIUtility.PingObject(cfg);
                 EditorUtility.DisplayDialog("itch.io push",
                     "One-time setup first:\n\n" +
                     "1. Create the project on itch.io (kind: downloadable, visibility: Restricted).\n" +
                     "2. Install butler and run 'butler login' once.\n" +
-                    "3. Set ItchTarget in TestBuildPipeline.cs to \"username/game-slug\".\n\n" +
+                    "3. Fill in Itch Target on the TestBuildConfig asset just selected\n" +
+                    "    in the Project window (\"username/game-slug\").\n\n" +
                     "Then this menu builds and uploads both platforms in one go.", "OK");
                 return;
             }
-            string failure = BuildAll() ?? PushAll();
+            string target = NormalizeItchTarget(cfg.itchTarget);
+            string failure = BuildAll() ?? PushAll(target);
             if (failure != null)
                 EditorUtility.DisplayDialog("itch.io push", failure, "OK");
             else
                 EditorUtility.DisplayDialog("itch.io push",
-                    $"Pushed {_lastVersion} to {ItchTarget} (win64 + linux64).", "OK");
+                    $"Pushed {_lastVersion} to {target} (win64 + linux64).", "OK");
+        }
+
+        // butler wants "username/game-slug"; people naturally paste the page URL
+        // ("https://username.itch.io/game-slug") — accept both.
+        private static string NormalizeItchTarget(string raw)
+        {
+            string t = raw.Trim().TrimEnd('/');
+            var m = System.Text.RegularExpressions.Regex.Match(
+                t, @"^https?://([^./]+)\.itch\.io/(.+)$");
+            return m.Success ? $"{m.Groups[1].Value}/{m.Groups[2].Value}" : t;
+        }
+
+        // Unity's GUI process doesn't reliably inherit the shell's PATH, so prefer the
+        // no-sudo install spot (~/.local/bin) when it exists, PATH lookup otherwise.
+        private static string ButlerPath()
+        {
+            string local = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".local", "bin", "butler");
+            return File.Exists(local) ? local : "butler";
         }
 
         // butler diffs against the previous push, so testers only download what changed.
-        private static string PushAll()
+        private static string PushAll(string itchTarget)
         {
             foreach (string platform in new[] { "win64", "linux64" })
             {
                 string dir = Path.Combine(RepoRoot, "Builds", platform, ProductDirName);
-                string args = $"push \"{dir}\" {ItchTarget}:{platform} --userversion {_lastVersion}";
+                string args = $"push \"{dir}\" {itchTarget}:{platform} --userversion {_lastVersion}";
                 try
                 {
-                    var psi = new ProcessStartInfo("butler", args)
+                    var psi = new ProcessStartInfo(ButlerPath(), args)
                     {
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
@@ -86,8 +135,8 @@ namespace Game.EditorTools
                 }
                 catch (System.ComponentModel.Win32Exception)
                 {
-                    return "butler not found on PATH. Install it from " +
-                           "https://itch.io/docs/butler/ then run 'butler login' once.";
+                    return "butler not found (checked ~/.local/bin and PATH). Install it " +
+                           "from https://itch.io/docs/butler/ then run 'butler login' once.";
                 }
             }
             return null;
