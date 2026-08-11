@@ -23,6 +23,7 @@ GameObject:
   - component: {fileID: 8931706958247822987}
   - component: {fileID: 771238114592837401}
   - component: {fileID: 771238114592837402}
+  - component: {fileID: 3414308336209886356}
   m_Layer: 8
   m_Name: Player
   m_TagString: Untagged
@@ -109,6 +110,13 @@ MonoBehaviour:
   crouchCameraDrop: 0.6
   climbSpeed: 3
   climbMoveFactor: 0.4
+  swimSpeed: 3
+  swimSprintSpeed: 4.5
+  swimEnterDepth: 1.2
+  swimExitDepth: 0.9
+  swimFloatDepth: 1.25
+  swimBuoyancy: 4
+  swimDrag: 20
   lookSensitivity: 0.12
   minPitch: -80
   maxPitch: 80
@@ -152,6 +160,9 @@ MonoBehaviour:
   session: {fileID: 11400000, guid: a152e68eceb2b6803a62494c3bc30218, type: 2}
   nameplatePrefab: {fileID: 8359370337378488824, guid: 607be2e44013d83ceb44e18531cac765, type: 3}
   killY: -10
+  maxHealth: 100
+  regenDelay: 8
+  regenRate: 10
 --- !u!114 &5895216637682204413
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -297,34 +308,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 8b72794863775502c0c9d9bac09891b0, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Game.Ship.PlayerRockView
-  modelRoot: {fileID: 0}
---- !u!114 &771238114592837401
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2107591459710408308}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: b3f9d1c27a8e4b5f9d0c3a6e8f2b7d15, type: 3}
-  m_Name:
-  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerRagdollView
---- !u!114 &771238114592837402
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2107591459710408308}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e7a41c9350b64d2f8a1c5b9e3d7f0a26, type: 3}
-  m_Name:
-  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerFootstepsView
-  blendRate: 3
 --- !u!114 &8931706958247822987
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -340,6 +325,64 @@ MonoBehaviour:
   gripAngle: 35
   gripRadius: 0
   blendRate: 5
+--- !u!114 &771238114592837401
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b3f9d1c27a8e4b5f9d0c3a6e8f2b7d15, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerRagdollView
+  waterDepthThreshold: 0.05
+  buoyancyAccel: 16
+  waterLinearDamping: 2.8
+  waterAngularDamping: 2
+--- !u!114 &771238114592837402
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e7a41c9350b64d2f8a1c5b9e3d7f0a26, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Player.PlayerFootstepsView
+  strideBase: 0.55
+  stridePerSpeed: 0.16
+  minSpeed: 0.5
+  volumeAtWalk: 0.5
+  volumeAtSprint: 0.85
+  crouchVolumeScale: 0.4
+--- !u!114 &3414308336209886356
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2107591459710408308}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 461eed6dd0232a35462d5858ea0ea865, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Game.Gameplay.WaterRippleEmitter
+  points:
+  - {x: 0, y: -0.5, z: 0}
+  idleInterval: 1.7
+  movingInterval: 0.32
+  fullRateSpeed: 4
+  idleRadius: 0.9
+  movingRadius: 2
+  idleStrength: 0.5
+  movingStrength: 0.9
+  ringLife: 1.8
+  maxDepth: 2
+  maxAbove: 0.3
 --- !u!1 &6925205485701196812
 GameObject:
   m_ObjectHideFlags: 0

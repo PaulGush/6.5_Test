@@ -21,6 +21,7 @@ Shader "Sea/Waves"
         _DetailFadeEnd("Detail Fade End (m)", Float) = 160
         _SpecStrength("Sun Glint", Range(0, 1)) = 0.35
         _FoamColor("Foam Color", Color) = (0.93, 0.97, 0.97, 1)
+        _RippleTint("Ripple Foam Blend", Range(0, 1)) = 0.06
         _FoamWidth("Foam Contact Width (m)", Float) = 0.85
         _FoamNoiseScale("Foam Noise Scale (1/m)", Float) = 2.6
         _FacetFadeStart("Facet Shading Fade Start (m)", Float) = 18
@@ -61,11 +62,22 @@ Shader "Sea/Waves"
             float _DetailFadeEnd;
             float _SpecStrength;
             half4 _FoamColor;
+            float _RippleTint;
             float _FoamWidth;
             float _FoamNoiseScale;
             float _FacetFadeStart;
             float _FacetFadeEnd;
             CBUFFER_END
+
+            // Dynamic ripple rings, fed as shader globals by WaterRippleSystem: foam
+            // circles expanding from swimmers, hulls, cargo and sharks. Drawn here in
+            // the fragment stage so every ring rides the displaced wave surface —
+            // a particle quad at mean sea level would slice through the crests.
+            // MAX_RIPPLES must match WaterRippleSystem.MaxRipples.
+            #define MAX_RIPPLES 96
+            float4 _RippleData[MAX_RIPPLES]; // xy: world XZ centre; z: birth (wave clock); w: full-grown radius
+            float4 _RippleAux[MAX_RIPPLES];  // x: strength; y: lifetime (s)
+            int _RippleCount;
 
             struct Attributes
             {
@@ -208,6 +220,14 @@ Shader "Sea/Waves"
                 // shapes like a swimmer at grazing angles.
                 if (facing >= 0)
                 {
+                    float t = _WaveTime >= 0 ? _WaveTime : _Time.y;
+                    float ts = t * _WaveSpeed;
+                    // Churned-water colour, shared by the contact wash and the ripple
+                    // rings: the shallow blue lit like the surface, a touch brighter —
+                    // disturbed water reads lighter and bluer, never surf white.
+                    half3 shallowLit = _ShallowColor.rgb * (0.35 + 0.65 * ndl) * light.color;
+                    half3 stir = lerp(lit, shallowLit * 1.25, 0.75);
+                    stir = lerp(stir, _FoamColor.rgb * light.color, _RippleTint);
                     float2 uv = IN.positionCS.xy / _ScaledScreenParams.xy;
                     float raw = SampleSceneDepth(uv);
                     #if !UNITY_REVERSED_Z
@@ -224,8 +244,6 @@ Shader "Sea/Waves"
                     float gap = IN.positionWS.y - scenePos.y;
                     if (gap >= 0 && gap < _FoamWidth)
                     {
-                        float t = _WaveTime >= 0 ? _WaveTime : _Time.y;
-                        float ts = t * _WaveSpeed;
                         float fn = VNoise(IN.positionWS.xz * _FoamNoiseScale + float2(0.23, 0.17) * ts)
                                  + 0.5 * VNoise(IN.positionWS.xz * (_FoamNoiseScale * 2.7) - float2(0.11, 0.29) * ts);
 
@@ -233,13 +251,50 @@ Shader "Sea/Waves"
                         float lick = 1.0 - saturate(gap / (_FoamWidth * 0.18));
                         lick = smoothstep(0.35, 0.8, lick * (0.55 + 0.45 * fn));
 
-                        // The wash: fades with depth, sparse noise peaks only, kept faint —
-                        // it hints at shallows; the churn around swimmers comes from
-                        // particles (PlayerSwimFxView), not from painting the body.
+                        // The wash: fades with depth, sparse noise peaks only — stirred
+                        // BLUE, not white, so a prone swimmer sits in churned water
+                        // rather than a bleached halo. Only the crisp lick at the actual
+                        // waterline crossing stays foam white, painted on top.
                         float wash = 1.0 - saturate(gap / _FoamWidth);
-                        wash = smoothstep(0.62, 1.0, wash * (0.35 + 0.65 * fn)) * 0.35;
+                        wash = smoothstep(0.62, 1.0, wash * (0.35 + 0.65 * fn)) * 0.55;
 
-                        lit = lerp(lit, _FoamColor.rgb * light.color, max(lick, wash));
+                        lit = lerp(lit, stir, wash);
+                        lit = lerp(lit, _FoamColor.rgb * light.color, lick);
+                    }
+
+                    // Ripple rings: an expanding, thickening, fading foam circle per
+                    // live slot. Ages and radii are tiny per-slot tests, so dead slots
+                    // cost almost nothing; the noise break-up runs once on the sum.
+                    float rippleFoam = 0.0;
+                    [loop]
+                    for (int ri = 0; ri < _RippleCount; ri++)
+                    {
+                        float4 rd = _RippleData[ri];
+                        float2 aux = _RippleAux[ri].xy;
+                        float age = t - rd.z;
+                        if (age < 0.0 || age >= aux.y) continue;
+                        float2 toC = IN.positionWS.xz - rd.xy;
+                        float distSq = dot(toC, toC);
+                        float reach = rd.w + 0.8;
+                        if (distSq > reach * reach) continue;
+
+                        float a01 = age / aux.y;
+                        // Decelerating expansion: fast splash, then the ring coasts out
+                        // while the band widens and the foam thins away.
+                        float radius = rd.w * (1.0 - (1.0 - a01) * (1.0 - a01));
+                        float width = max(0.22, rd.w * lerp(0.12, 0.3, a01));
+                        float ring = 1.0 - saturate(abs(sqrt(distSq) - radius) / width);
+                        float fade = 1.0 - a01;
+                        rippleFoam += ring * ring * aux.x * fade * fade;
+                    }
+                    if (rippleFoam > 0.001)
+                    {
+                        // Same drifting noise family as the contact foam, so rings read
+                        // as patchy churned water, not vector-crisp circles. Detail fade
+                        // keeps the far field from shimmering with sub-pixel rings.
+                        float rn = VNoise(IN.positionWS.xz * (_FoamNoiseScale * 1.9) + float2(0.31, -0.13) * ts);
+                        rippleFoam *= (0.55 + 0.75 * rn) * IN.detail;
+                        lit = lerp(lit, stir, saturate(rippleFoam));
                     }
                 }
 

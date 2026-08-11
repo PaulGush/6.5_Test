@@ -109,5 +109,73 @@ Shader "Island/Terrain"
             }
             ENDHLSL
         }
+
+        // Depth prepass presence. Without this the islands never reach the camera depth
+        // texture, and the sea shader's contact foam — which compares reconstructed
+        // scene height against the wave surface — cannot see the shoreline: rocks and
+        // hulls got their foam lick while whole islands sat in glassy water.
+        Pass
+        {
+            Name "DepthOnly"
+            Tags { "LightMode"="DepthOnly" }
+            ZWrite On
+            ColorMask R
+
+            HLSLPROGRAM
+            #pragma vertex DepthVert
+            #pragma fragment DepthFrag
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+            struct DepthAttributes { float4 positionOS : POSITION; };
+            struct DepthVaryings { float4 positionCS : SV_POSITION; };
+
+            DepthVaryings DepthVert(DepthAttributes IN)
+            {
+                DepthVaryings OUT;
+                OUT.positionCS = TransformObjectToHClip(IN.positionOS.xyz);
+                return OUT;
+            }
+
+            half DepthFrag(DepthVaryings IN) : SV_Target { return IN.positionCS.z; }
+            ENDHLSL
+        }
+
+        // With SSAO on, URP's prepass renders DepthNormals passes INSTEAD of DepthOnly —
+        // without this one the islands still never reach the depth texture and the
+        // shoreline foam stays missing. Normals from derivatives, like the forward pass.
+        Pass
+        {
+            Name "DepthNormals"
+            Tags { "LightMode"="DepthNormals" }
+            ZWrite On
+
+            HLSLPROGRAM
+            #pragma vertex DepthNormalsVert
+            #pragma fragment DepthNormalsFrag
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+            struct DnAttributes { float4 positionOS : POSITION; };
+            struct DnVaryings
+            {
+                float4 positionCS : SV_POSITION;
+                float3 positionWS : TEXCOORD0;
+            };
+
+            DnVaryings DepthNormalsVert(DnAttributes IN)
+            {
+                DnVaryings OUT;
+                OUT.positionWS = TransformObjectToWorld(IN.positionOS.xyz);
+                OUT.positionCS = TransformWorldToHClip(OUT.positionWS);
+                return OUT;
+            }
+
+            half4 DepthNormalsFrag(DnVaryings IN) : SV_Target
+            {
+                float3 n = normalize(cross(ddy(IN.positionWS), ddx(IN.positionWS)));
+                n = n.y >= 0 ? n : -n;
+                return half4(n, 0.0);
+            }
+            ENDHLSL
+        }
     }
 }
