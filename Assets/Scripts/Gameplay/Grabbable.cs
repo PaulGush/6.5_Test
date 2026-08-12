@@ -105,11 +105,23 @@ namespace Game.Gameplay
             }
             else
             {
+                // Only the SERVER simulates a free prop. This hook runs on every peer,
+                // and un-kinematic-ing the remote copies too let each client run its
+                // OWN physics from the release pose — sliding its own way on the deck
+                // while the server (at rest, sending nothing new) disagreed. That was
+                // the grab->release desync: held was carrier-driven and perfect,
+                // released quietly diverged. Remote copies stay kinematic and follow
+                // the NetworkRigidbody snapshots.
+                bool simulate = isServer;
                 Body.collisionDetectionMode = CollisionDetectionMode.Discrete;
-                Body.isKinematic = false;
-                Body.useGravity = true;
-                Body.interpolation = RigidbodyInterpolation.Interpolate;
-                Body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+                Body.isKinematic = !simulate;
+                Body.useGravity = simulate;
+                Body.interpolation = simulate
+                    ? RigidbodyInterpolation.Interpolate
+                    : RigidbodyInterpolation.None; // the NetworkTransform writes the pose
+                Body.collisionDetectionMode = simulate
+                    ? CollisionDetectionMode.ContinuousDynamic
+                    : CollisionDetectionMode.ContinuousSpeculative;
             }
         }
     }
