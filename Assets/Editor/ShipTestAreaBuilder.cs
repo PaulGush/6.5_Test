@@ -185,6 +185,9 @@ namespace Game.EditorTools
                 EnsureSharksOnce();
                 EnsureCargoOnce();
                 EnsureSkullEyeFiresOnce();
+                EnsureVignetteSkullEyesOnce();
+                EnsureSpawnsOnDockOnce();
+                EnsureNetSendRatesOnce();
                 EnsureDeliveryFxOnce();
                 EnsureWaterRipplesOnce();
                 EnsureShipMoored();
@@ -3076,6 +3079,84 @@ namespace Game.EditorTools
                       "seated, Night controls wired (dark by day, lit after dusk).");
         }
 
+        // Maintenance: the player's and warship's NetworkTransforms were minted at
+        // syncInterval 0.05 (20 Hz sends). Under Mirror's snapshot interpolation the
+        // client's view delay scales with the send interval, so 20 Hz pads ~100+ ms
+        // onto a joined client's view of their OWN body — most of the input lag a
+        // client feels that the host doesn't. Send at the manager's full 60 Hz
+        // sendRate instead (syncInterval 0); the interpolation buffer shrinks with it.
+        // In-place prefab patch, never a rebuild (hand-tuned warship colliders).
+        private static void EnsureNetSendRatesOnce()
+        {
+            bool changed = false;
+            foreach (string path in new[] { "Assets/Prefabs/Player.prefab", WarshipPrefabPath })
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (prefab == null) continue;
+                foreach (var nt in prefab.GetComponentsInChildren<Mirror.NetworkTransformReliable>(true))
+                    if (nt.syncInterval != 0f)
+                    {
+                        nt.syncInterval = 0f;
+                        EditorUtility.SetDirty(nt);
+                        changed = true;
+                    }
+            }
+            if (!changed) return;
+            AssetDatabase.SaveAssets();
+            Debug.Log("[ShipTestAreaBuilder] Player/warship NetworkTransforms now send at the " +
+                      "full 60 Hz sendRate (was 20 Hz): shorter interpolation delay for " +
+                      "joined clients.");
+        }
+
+        // Maintenance: the Spawns group predates the island and sat at scene root
+        // around z 27 — inside today's grown island. The host survived (its lanes sat
+        // a hair above the plateau sand) but a joined client spawned fractionally
+        // UNDER the surface and fell through into the mound. The lanes belong on the
+        // dock: with the group at the origin they land at (x -3/-1, y 1.2, z +-2.5),
+        // 0.3 m above the dock top, in the clear bollard lanes.
+        private static void EnsureSpawnsOnDockOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject spawns = GameObject.Find("Spawns");
+            if (spawns == null || spawns.transform.position.sqrMagnitude < 0.01f) return;
+
+            Vector3 was = spawns.transform.position;
+            spawns.transform.position = Vector3.zero;
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log($"[ShipTestAreaBuilder] Spawns moved from {was} (buried by the grown " +
+                      "island) to the dock lanes at the origin.");
+        }
+
+        // Maintenance: any OTHER skull rock in the world gets the same burning night
+        // eyes as the loot cave's (currently: BareKnuckle's vignette skull) — the
+        // distance-readable-landmark principle, for free off the cave machinery.
+        // Socket seats are skull-model-local, so scale/rotation don't matter. Runs
+        // every pass, so an archipelago rebuild that recreates the vignette bare gets
+        // its fires back on the next compile.
+        private static void EnsureVignetteSkullEyesOnce()
+        {
+            if (SceneManager.GetActiveScene().path != ScenePath) return;
+            GameObject harbor = GameObject.Find("Harbor");
+            Transform arch = harbor != null ? harbor.transform.Find("Archipelago") : null;
+            if (arch == null) return;
+
+            bool changed = false;
+            foreach (Transform t in arch.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name != "SM_Env_Rock_Skull_01" || t.Find("EyeFire_L") != null) continue;
+                AddSkullEyeFires(t.gameObject);
+                changed = true;
+            }
+            if (!changed) return;
+            Scene scene = SceneManager.GetActiveScene();
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Debug.Log("[ShipTestAreaBuilder] Vignette skull eye fires lit (BareKnuckle's " +
+                      "skull now burns at night like the loot cave's).");
+        }
+
         // Maintenance: the delivery payoff rig on the existing scene's cave. The zone
         // lives inside the hand-authored LootCave, so this attaches IN PLACE — cave
         // features never ship via island rebuild.
@@ -3817,6 +3898,8 @@ namespace Game.EditorTools
             // tuning). On a server-owned prop that mode force-kinematics the body every
             // FixedUpdate — cargo freezes mid-air. Server authority, like GrabProp.
             sync.syncDirection = Mirror.SyncDirection.ServerToClient;
+            // Sub-visible quantization steps for at-rest deck cargo on joined clients.
+            sync.positionPrecision = LootSyncPrecision;
 
             var grab = go.AddComponent<Grabbable>();
             var soGrab = new SerializedObject(grab);
@@ -3966,6 +4049,12 @@ namespace Game.EditorTools
         // Migration: loot minted before the syncDirection fix carries Mirror's
         // ClientToServer default, whose FixedUpdate force-kinematics server-owned
         // bodies — frozen, floating cargo. Flip every scene CargoItem to server auth.
+        // Also tightens position precision: the default 1 cm delta quantization reads
+        // as visible shaking on at-rest deck cargo for joined clients (the heaving
+        // ship keeps server bodies awake, so tiny quantized deltas stream endlessly).
+        // 2 mm keeps delta compression while dropping the steps below what eyes see.
+        private const float LootSyncPrecision = 0.002f;
+
         private static void FixupLootSyncDirection()
         {
             int fixedCount = 0;
@@ -3973,7 +4062,14 @@ namespace Game.EditorTools
                          FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
                 var sync = item.GetComponent<Mirror.NetworkRigidbodyReliable>();
-                if (sync == null || sync.syncDirection == Mirror.SyncDirection.ServerToClient)
+                if (sync == null) continue;
+                if (sync.positionPrecision > LootSyncPrecision + 0.0001f)
+                {
+                    sync.positionPrecision = LootSyncPrecision;
+                    EditorUtility.SetDirty(sync);
+                    fixedCount++;
+                }
+                if (sync.syncDirection == Mirror.SyncDirection.ServerToClient)
                     continue;
                 sync.syncDirection = Mirror.SyncDirection.ServerToClient;
                 EditorUtility.SetDirty(sync);
@@ -3984,8 +4080,8 @@ namespace Game.EditorTools
                 Scene scene = SceneManager.GetActiveScene();
                 EditorSceneManager.MarkSceneDirty(scene);
                 EditorSceneManager.SaveScene(scene);
-                Debug.Log($"[ShipTestAreaBuilder] {fixedCount} cargo items flipped to server " +
-                          "authority (ClientToServer default was freezing their physics).");
+                Debug.Log($"[ShipTestAreaBuilder] {fixedCount} cargo sync fixes applied " +
+                          "(server authority and/or 2 mm position precision).");
             }
         }
 
