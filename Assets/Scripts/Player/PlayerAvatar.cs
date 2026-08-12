@@ -55,6 +55,12 @@ namespace Game.Player
 
         [Tooltip("Visual-only lift of the model while stroking forward (m): the prone swim pose reads mostly submerged from third person without it. The capsule and camera never move.")]
         [SerializeField] private float swimForwardLift = 0.4f;
+        [Tooltip("Swim pitch: degrees of model tilt per m/s of vertical swim speed — surfacing angles up, diving angles down.")]
+        [SerializeField] private float swimTiltPerSpeed = 15f;
+        [Tooltip("Swim pitch clamp (degrees).")]
+        [SerializeField] private float swimTiltMax = 50f;
+        [Tooltip("Vertical speed ignored by the swim pitch (m/s): surface bobbing on the swell stays level; only deliberate dives/ascents tilt.")]
+        [SerializeField] private float swimTiltDeadzone = 0.6f;
         [Tooltip("Visual-only lift of a dead body in water (m): the death pose lies at feet level, this floats it up to the surface.")]
         [SerializeField] private float deadFloatLift = 1.25f;
 
@@ -225,6 +231,21 @@ namespace Game.Player
                 + _swimT * _deadT * deadFloatLift;
             if (lift > 0.0005f && modelRoot != null)
                 modelRoot.position += Vector3.up * lift;
+
+            // Visual-only swim pitch: surfacing angles the model up, diving angles it
+            // down, level swimming stays prone. Driven by the measured vertical speed
+            // of the replicated transform, so every client derives the same tilt with
+            // no extra sync; the deadzone keeps surface bobbing on the swell level.
+            // Safe to compose: the base rotation was rebuilt absolutely above.
+            if (modelRoot != null && _swimT > 0.01f)
+            {
+                float v = _verticalSpeed;
+                float intent = Mathf.Sign(v) * Mathf.Max(0f, Mathf.Abs(v) - swimTiltDeadzone);
+                float tilt = Mathf.Clamp(intent * swimTiltPerSpeed, -swimTiltMax, swimTiltMax)
+                    * _swimT * (1f - _deadT);
+                if (Mathf.Abs(tilt) > 0.1f)
+                    modelRoot.localRotation *= Quaternion.Euler(-tilt, 0f, 0f);
+            }
         }
 
         // Velocity from parent-space position deltas: works on every client off the

@@ -12,6 +12,7 @@ namespace Game.Player
         public bool Sprint;
         public bool Crouch;                 // held while the crouch button is down
         public bool JumpPressed;            // edge-triggered: true only on the sample the press occurred
+        public bool JumpHeld;               // held while the jump button is down (swim ascent)
         public bool FreeLook;               // third person: look orbits the camera; the body is steered by Move
     }
 }

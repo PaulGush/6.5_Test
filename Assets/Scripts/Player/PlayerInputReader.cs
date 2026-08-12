@@ -75,6 +75,7 @@ namespace Game.Player
                 Sprint = _sprint.IsPressed(),
                 Crouch = _crouch.IsPressed() || _crouchToggled, // Ctrl held OR C toggled
                 JumpPressed = _jumpQueued,
+                JumpHeld = _jump.IsPressed(),
             };
             _jumpQueued = false;
             return state;

@@ -61,6 +61,8 @@ namespace Game.Player
         [SerializeField] private float swimBuoyancy = 4f;
         [Tooltip("Water drag: how fast vertical momentum converges on the buoyant velocity (m/s²). Lets a fall plunge in before bobbing up.")]
         [SerializeField] private float swimDrag = 20f;
+        [Tooltip("Vertical swim speed with SPACE (up) or CTRL (down) held (m/s).")]
+        [SerializeField] private float swimVerticalSpeed = 3f;
 
         [Header("Look")]
         [Tooltip("Degrees of rotation per unit of look delta.")]
@@ -95,6 +97,9 @@ namespace Game.Player
         public bool IsClimbing { get; private set; }
         /// <summary>True while the last Tick was in swim mode.</summary>
         public bool IsSwimming { get; private set; }
+
+        /// <summary>Current vertical velocity (m/s) — diagnostics.</summary>
+        public float VerticalVelocity => _verticalVelocity;
         /// <summary>CharacterController grounded state from the last Move.</summary>
         public bool IsGrounded => _cc != null && _cc.isGrounded;
 
@@ -210,6 +215,83 @@ namespace Game.Player
             ApplyPivot();
         }
 
+        // First-person yaw prediction for joined clients: how far the VIEW currently
+        // leads the server-authoritative body, and the body yaw last observed so the
+        // server's catch-up can be consumed out of the lead.
+        private float _pendingYaw;
+        private float _lastBodyYaw;
+        private bool _yawTrackInit;
+
+        /// <summary>
+        /// Owner-side reset after a respawn/teleport. The server's Respawn wipes ITS
+        /// camera state, but the owning client keeps its own copies (pitch, orbit
+        /// yaw, the yaw lead, the observed-body-yaw tracker) — stale against the
+        /// teleported body, they skew every movement frame afterwards ("third person
+        /// isn't correctly relative after dying"). Wipe them and re-seed off the new
+        /// body pose on the next ClientLook.
+        /// </summary>
+        public void ClientResetView()
+        {
+            _pitch = 0f;
+            _camYaw = 0f;
+            _pendingYaw = 0f;
+            _yawTrackInit = false; // next ClientLook re-seeds from the teleported body yaw
+            ApplyPivot();
+        }
+
+        /// <summary>
+        /// Owner-side camera feel for JOINED clients. Pitch — and the free-look orbit
+        /// yaw — live on the camera pivot, a child transform that never syncs: the
+        /// server applies them to its own copy via Tick, but a remote owner would
+        /// never see it, leaving vertical look dead. So the owning client applies the
+        /// camera-only part of look locally every frame.
+        ///
+        /// First-person horizontal is trickier: yaw belongs to the BODY, which is
+        /// server-simulated and arrives back through the NetworkTransform a round
+        /// trip later. Instead of turning the body locally (which would fight that
+        /// sync), the camera pivot LEADS by the not-yet-acknowledged yaw
+        /// (_pendingYaw): mouse input turns the view instantly, and as the synced
+        /// body actually turns underneath, the lead is consumed back toward zero. In
+        /// first person the player cannot see their own body, so a correct lead is
+        /// indistinguishable from a real turn.
+        /// </summary>
+        public void ClientLook(in PlayerInputState input)
+        {
+            float bodyYaw = transform.eulerAngles.y;
+            if (!_yawTrackInit) { _lastBodyYaw = bodyYaw; _yawTrackInit = true; }
+            float serverDelta = Mathf.DeltaAngle(_lastBodyYaw, bodyYaw);
+            _lastBodyYaw = bodyYaw;
+
+            if (input.FreeLook)
+            {
+                // Mirror the server's free-look camera bookkeeping: when the body
+                // turns under the camera (face-the-movement, or a ridden deck
+                // swinging), the pivot must counter-rotate to hold the view steady —
+                // the server does this to ITS _camYaw inside Tick, but that never
+                // replicates. Without this the client's view swings with every body
+                // turn and WASD stops matching the screen ("world-relative" movement).
+                _camYaw += input.Look.x * lookSensitivity - serverDelta;
+                _pendingYaw = 0f;
+            }
+            else
+            {
+                // The server turning the body IS our earlier input arriving — consume
+                // it from the lead (same-sign only, so ship-induced body rotation on a
+                // ridden deck doesn't wind the lead the wrong way)...
+                if (serverDelta != 0f && Mathf.Sign(serverDelta) == Mathf.Sign(_pendingYaw))
+                    _pendingYaw -= Mathf.Clamp(serverDelta, -Mathf.Abs(_pendingYaw), Mathf.Abs(_pendingYaw));
+                // ...then add this frame's fresh input to the lead.
+                _pendingYaw += input.Look.x * lookSensitivity;
+                // Slow safety drain: deck-rotation noise can leave a residual lead
+                // that no server turn will ever consume; bleed it out gently.
+                _pendingYaw = Mathf.MoveTowards(_pendingYaw, 0f, 15f * Time.deltaTime);
+                _camYaw = _pendingYaw; // the pivot leads the body by the un-acked yaw
+            }
+
+            _pitch = Mathf.Clamp(_pitch - input.Look.y * lookSensitivity, minPitch, maxPitch);
+            ApplyPivot();
+        }
+
         private void ApplyPivot()
         {
             if (cameraPivot != null)
@@ -242,17 +324,29 @@ namespace Game.Player
             }
             // Swim mode: gravity is off; a buoyancy spring rides the capsule on the animated
             // wave surface (HeightAt runs on NetworkTime, so server and clients agree on the
-            // waterline). Jump gives a hop — enough to splash out onto a low shore.
+            // waterline). SPACE held swims up, CTRL held dives; near the surface a fresh
+            // jump press still hops — enough to splash out onto a low shore.
             else if (IsSwimming)
             {
                 // Feet ride swimFloatDepth under the surface -> chest at the waterline,
                 // head clear above it. _bottomOffset converts feet height to pivot height.
                 float targetY = _swimSurfaceY - swimFloatDepth - _bottomOffset;
-                float buoyant = Mathf.Clamp((targetY - transform.position.y) * swimBuoyancy, -2.5f, 2.5f);
-                // Drag toward the buoyant velocity instead of snapping: a fall still plunges
-                // in before bobbing up, and a jump hop keeps its momentum for a moment.
-                _verticalVelocity = Mathf.MoveTowards(_verticalVelocity, buoyant, swimDrag * dt);
-                if (input.JumpPressed)
+                // Explicit vertical intent overrides the buoyancy spring. The spring
+                // alone can trap a swimmer anywhere with geometry overhead (under a
+                // hull, inside the cove skull's submerged shell): buoyancy pins you to
+                // the ceiling, and the way out is to DIVE down and swim clear.
+                float vertical = (input.JumpHeld ? 1f : 0f) - (input.Crouch ? 1f : 0f);
+                if (vertical != 0f)
+                    _verticalVelocity = Mathf.MoveTowards(
+                        _verticalVelocity, vertical * swimVerticalSpeed, swimDrag * dt);
+                else
+                {
+                    float buoyant = Mathf.Clamp((targetY - transform.position.y) * swimBuoyancy, -2.5f, 2.5f);
+                    // Drag toward the buoyant velocity instead of snapping: a fall still plunges
+                    // in before bobbing up, and a jump hop keeps its momentum for a moment.
+                    _verticalVelocity = Mathf.MoveTowards(_verticalVelocity, buoyant, swimDrag * dt);
+                }
+                if (input.JumpPressed && transform.position.y > targetY - 0.6f)
                     _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity) * 0.8f;
                 _externalVel = Vector3.MoveTowards(_externalVel, Vector3.zero, airLaunchDamping * dt);
             }

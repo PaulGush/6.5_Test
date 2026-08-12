@@ -261,9 +261,14 @@ namespace Game.Player
                 // the local connection. Mirror drains that queue after LateUpdate, which would
                 // move us AFTER the camera has already updated each frame — the camera rides
                 // one stale frame behind the model, which reads as judder in third person.
-                ServerMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, s.FreeLook, Time.deltaTime);
+                ServerMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.JumpHeld, s.Crouch, s.FreeLook, Time.deltaTime);
             else
-                CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.Crouch, s.FreeLook, Time.deltaTime);
+            {
+                // Joined client: camera pitch/orbit are unsynced pivot state, so they
+                // must be applied locally — the server's copy never replicates back.
+                if (!dead) _controller.ClientLook(s);
+                CmdMove(s.Move, s.Look, s.Sprint, s.JumpPressed, s.JumpHeld, s.Crouch, s.FreeLook, Time.deltaTime);
+            }
         }
 
         /// <summary>Server-authoritative respawn: reset the simulation pose and snap clients.</summary>
@@ -277,17 +282,28 @@ namespace Game.Player
             // Force a teleport (not an interpolated slide) on every client.
             if (_netTransform != null)
                 _netTransform.ServerTeleport(_spawnPos, _spawnRot);
+            // The owner's local camera state (pitch/orbit/yaw-lead) is now stale
+            // against the teleported body — have them wipe it like the server just did.
+            TargetViewReset(connectionToClient);
+        }
+
+        [TargetRpc]
+        private void TargetViewReset(NetworkConnectionToClient _)
+        {
+            // On the host the direct Respawn call already wiped this same state;
+            // running again is harmless, so no gating needed.
+            if (_controller != null) _controller.ClientResetView();
         }
 
         // Owner -> server. Server is authoritative over the simulation.
         [Command]
-        private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, bool freeLook, float dt)
-            => ServerMove(move, look, sprint, jumpPressed, crouch, freeLook, dt);
+        private void CmdMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool jumpHeld, bool crouch, bool freeLook, float dt)
+            => ServerMove(move, look, sprint, jumpPressed, jumpHeld, crouch, freeLook, dt);
 
         // Shared server-side movement step: remote owners arrive here via CmdMove, the
         // host's own player calls it synchronously from Update (see there for why).
         [Server]
-        private void ServerMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool crouch, bool freeLook, float dt)
+        private void ServerMove(Vector2 move, Vector2 look, bool sprint, bool jumpPressed, bool jumpHeld, bool crouch, bool freeLook, float dt)
         {
             if (dead) return; // corpses don't move; the owner's death screen offers respawn
 
@@ -299,6 +315,7 @@ namespace Game.Player
             {
                 move = Vector2.zero;
                 jumpPressed = false;
+                jumpHeld = false;
                 sprint = false;
             }
 
@@ -309,6 +326,7 @@ namespace Game.Player
                 Sprint = sprint,
                 Crouch = crouch,
                 JumpPressed = jumpPressed,
+                JumpHeld = jumpHeld,
                 FreeLook = freeLook,
             };
             _controller.Tick(input, dt);
