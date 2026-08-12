@@ -77,8 +77,48 @@ namespace Game.Net
                 ? NetworkClient.localPlayer.transform.position.ToString("F2")
                 : "(none)";
 
+            // Timeline health: snapAge is how stale the newest received server state
+            // is. Flat = healthy; steadily GROWING across a session = the client's
+            // interpolation timeline is falling behind (the "desyncs after 30s" case).
+            double snapAge = NetworkClient.connection != null
+                ? NetworkTime.time - NetworkClient.connection.remoteTimeStamp
+                : -1.0;
+
+            // Shared reference object: the lowest-netId cargo item, logged on BOTH
+            // host and client. Diffing the two logs at the same wall-clock second
+            // turns "the objects seem desynced" into an actual distance.
+            uint cargoId = uint.MaxValue;
+            Vector3 cargoPos = default;
+            foreach (var kv in NetworkClient.spawned)
+                if (kv.Value != null && kv.Key < cargoId
+                    && kv.Value.GetComponent<Game.Gameplay.CargoItem>() != null)
+                {
+                    cargoId = kv.Key;
+                    cargoPos = kv.Value.transform.position;
+                }
+            string cargo = cargoId != uint.MaxValue
+                ? $" cargo{cargoId}={cargoPos.ToString("F2")}" : "";
+
             Debug.Log("[AutoStart] connected=" + NetworkClient.isConnected +
-                      " spawnedPlayers=" + players + " localPlayerPos=" + myPos);
+                      " spawnedPlayers=" + players + " localPlayerPos=" + myPos +
+                      $" rtt={NetworkTime.rtt * 1000.0:F0}ms" +
+                      $" snapAge={snapAge * 1000.0:F0}ms" +
+                      $" buffer={NetworkClient.bufferTime * 1000.0:F0}ms" + cargo);
+
+            // Host only: the SERVER's truth about every player's movement state, so a
+            // "client was flying / stuck / sliding" report can be checked against what
+            // the simulation actually thought was happening at that moment.
+            if (NetworkServer.active)
+                foreach (var kv in NetworkServer.spawned)
+                {
+                    if (kv.Value == null) continue;
+                    var pc = kv.Value.GetComponent<Game.Player.PlayerController>();
+                    if (pc == null || kv.Value.GetComponent<Game.Player.NetworkPlayer>() == null)
+                        continue;
+                    Debug.Log($"[AutoStart:srv] player{kv.Key} " +
+                              $"pos={kv.Value.transform.position.ToString("F2")} " +
+                              $"swim={pc.IsSwimming} climb={pc.IsClimbing} vy={pc.VerticalVelocity:F2}");
+                }
         }
     }
 }

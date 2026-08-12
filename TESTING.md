@@ -43,3 +43,16 @@ One-time setup for pushing:
 
 CI note: `Game.EditorTools.TestBuildPipeline.BuildAllBatch` is the
 `-executeMethod` entry point if this ever moves to GitHub Actions.
+
+## Solo multiplayer testing (no friends required)
+
+`scripts/local-2p-test.sh` runs the Linux build over KCP loopback, windowed:
+
+- `scripts/local-2p-test.sh` — one host instance + one client instance.
+- `scripts/local-2p-test.sh --join` — client only, for hosting in the editor
+  (press Host in the editor first).
+- Add `-n 2` for more clients.
+
+Per-instance logs go to `Builds/logs/`. This is the fastest way to see the
+game as a JOINED client sees it — replication, prediction, deck cargo — which
+is exactly where host-only testing lies to you.
